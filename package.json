@@ -1,0 +1,38 @@
+{
+  "name": "podium-voices",
+  "version": "0.1.0",
+  "description": "AI co-host MVP for Podium Outpost audio rooms",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts",
+    "test": "jest",
+    "test:unit": "jest --testPathPattern=unit",
+    "test:integration": "jest --testPathPattern=integration",
+    "smoke": "node scripts/smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "openai": "^4.52.0",
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@google-cloud/text-to-speech": "^5.0.0",
+    "dotenv": "^16.3.1",
+    "pino": "^9.0.0",
+    "pino-pretty": "^11.0.0",
+    "ws": "^8.16.0",
+    "webrtcvad": "1.0.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.11",
+    "@types/node": "^20.10.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.2"
+  }
+}

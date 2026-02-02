@@ -1,0 +1,1 @@
+{"version":3,"file":"stub.d.ts","sourceRoot":"","sources":["../../../src/adapters/tts/stub.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAEH,OAAO,KAAK,EAAE,IAAI,EAAE,YAAY,EAAE,MAAM,SAAS,CAAC;AAElD,qBAAa,OAAQ,YAAW,IAAI;IAC5B,UAAU,CAAC,KAAK,EAAE,MAAM,EAAE,QAAQ,CAAC,EAAE,YAAY,GAAG,OAAO,CAAC,MAAM,CAAC;CAG1E"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"stub.d.ts","sourceRoot":"","sources":["../../../src/adapters/llm/stub.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAEH,OAAO,KAAK,EAAE,IAAI,EAAE,OAAO,EAAE,WAAW,EAAE,YAAY,EAAE,MAAM,SAAS,CAAC;AAExE,qBAAa,OAAQ,YAAW,IAAI;IAC5B,IAAI,CAAC,SAAS,EAAE,OAAO,EAAE,EAAE,QAAQ,CAAC,EAAE,WAAW,GAAG,OAAO,CAAC,YAAY,CAAC;CAGhF"}

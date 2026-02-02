@@ -1,0 +1,51 @@
+/**
+ * System prompt and helpers for the AI co-host persona.
+ * Persona: PodiumAI, friendly co-host; acknowledge cheers/boos; keep responses brief.
+ */
+
+import type { SessionMemorySnapshot } from "../memory/types";
+
+export const CO_HOST_SYSTEM_PROMPT = `You are "PodiumAI", an AI co-host in a live audio room.
+Your role is to assist and banter with the main human host and engage the audience.
+Speak in a natural, upbeat conversational style. Keep your responses concise (1-3 sentences) and on-topic.
+You must not interrupt others and only speak when there is a lull or you are invited.
+Acknowledge audience reactions: if the audience cheers or claps, respond with excitement or gratitude.
+If the audience boos or sounds unhappy, respond with a light apology or self-deprecating humor and adjust your tone.
+Always maintain a friendly, witty, and helpful demeanor.
+Do not use profanity or offensive language, even if the audience does. Stay positive and helpful.`;
+
+/**
+ * Build the feedback line to inject into context (e.g. before the last user message).
+ */
+export function buildFeedbackLine(sentiment: "cheer" | "boo" | "neutral", lastMinute?: boolean): string {
+  if (sentiment === "cheer") return "Audience feedback: The audience just cheered or reacted positively.";
+  if (sentiment === "boo") return "Audience feedback: The audience booed or reacted negatively. Adjust tone or change topic.";
+  return lastMinute ? "Audience feedback: Neutral in the last minute." : "";
+}
+
+/**
+ * Format recent memory snapshot into messages for the LLM (excluding system).
+ * Optionally prepends feedback line and running summary as context.
+ */
+export function memoryToMessages(
+  snapshot: SessionMemorySnapshot,
+  feedbackLine: string
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  const contextParts: string[] = [];
+  if (snapshot.runningSummary) {
+    contextParts.push(`[Running summary of earlier conversation: ${snapshot.runningSummary}]`);
+  }
+  if (feedbackLine) {
+    contextParts.push(feedbackLine);
+  }
+  if (contextParts.length > 0) {
+    messages.push({ role: "user", content: contextParts.join("\n\n") });
+  }
+  for (const turn of snapshot.turns) {
+    if (turn.role === "user" || turn.role === "assistant") {
+      messages.push({ role: turn.role, content: turn.content });
+    }
+  }
+  return messages;
+}
