@@ -1,8 +1,12 @@
 /**
  * Google Cloud Text-to-Speech adapter.
- * Uses REST API with API key (env Google_Cloud_TTS_API_KEY or GOOGLE_CLOUD_TTS_API_KEY).
+ * - With API key: REST API (env Google_Cloud_TTS_API_KEY or GOOGLE_CLOUD_TTS_API_KEY).
+ * - Without API key: @google-cloud/text-to-speech client using Application Default
+ *   Credentials (GOOGLE_APPLICATION_CREDENTIALS service account JSON), which avoids 401
+ *   when the project does not allow API keys for TTS.
  */
 
+import { TextToSpeechClient } from "@google-cloud/text-to-speech";
 import type { ITTS, VoiceOptions } from "./types";
 
 export interface GoogleCloudTTSConfig {
@@ -13,6 +17,7 @@ export interface GoogleCloudTTSConfig {
 
 const SYNTHESIZE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
 
+/** TTS using REST API with API key. */
 export class GoogleCloudTTS implements ITTS {
   constructor(private readonly config: GoogleCloudTTSConfig) {}
 
@@ -39,5 +44,32 @@ export class GoogleCloudTTS implements ITTS {
     const b64 = data.audioContent;
     if (!b64) return Buffer.alloc(0);
     return Buffer.from(b64, "base64");
+  }
+}
+
+/** TTS using official Node client and Application Default Credentials (OAuth2 / service account). */
+export interface GoogleCloudTTSADCConfig {
+  voiceName?: string;
+  languageCode?: string;
+}
+
+export class GoogleCloudTTSADC implements ITTS {
+  private readonly client: TextToSpeechClient;
+  constructor(private readonly config: GoogleCloudTTSADCConfig = {}) {
+    this.client = new TextToSpeechClient();
+  }
+
+  async synthesize(text: string, options?: VoiceOptions): Promise<Buffer> {
+    const voiceName = options?.voiceName ?? this.config.voiceName ?? "en-US-Neural2-D";
+    const languageCode = options?.languageCode ?? this.config.languageCode ?? "en-US";
+    const sampleRate = options?.sampleRateHz ?? 48000;
+    const [response] = await this.client.synthesizeSpeech({
+      input: { text },
+      voice: { name: voiceName, languageCode },
+      audioConfig: { audioEncoding: "LINEAR16", sampleRateHertz: sampleRate },
+    });
+    const content = response.audioContent;
+    if (!content || !(content instanceof Uint8Array)) return Buffer.alloc(0);
+    return Buffer.from(content);
   }
 }

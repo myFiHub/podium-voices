@@ -116,11 +116,11 @@ export class PodiumWS {
   }
 
   startSpeaking(outpostUuid: string): void {
-    this.send({ message_type: WS_SEND_TYPES.START_SPEAKING, outpost_uuid: outpostUuid });
+    this.send({ message_type: WS_SEND_TYPES.START_SPEAKING, outpost_uuid: outpostUuid, data: {} });
   }
 
   stopSpeaking(outpostUuid: string): void {
-    this.send({ message_type: WS_SEND_TYPES.STOP_SPEAKING, outpost_uuid: outpostUuid });
+    this.send({ message_type: WS_SEND_TYPES.STOP_SPEAKING, outpost_uuid: outpostUuid, data: {} });
   }
 
   /** Reactions: data must include react_to_user_address (wallet address of target user). */

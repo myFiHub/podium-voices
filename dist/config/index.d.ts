@@ -54,6 +54,18 @@ export interface AppConfig {
         vadSilenceMs: number;
         /** Max recent turns to keep in session memory */
         maxTurnsInMemory: number;
+        /** Optional greeting spoken by the bot when it joins the room (starts the dialogue). Empty = no greeting. */
+        greetingText?: string;
+        /** Delay (ms) after room join before speaking the greeting (allows participants to hear; 0 = immediate). */
+        greetingDelayMs?: number;
+        /** If true, generate a storyteller-style opener via LLM after join (when greetingText is empty). */
+        openerEnabled?: boolean;
+        /** Delay (ms) after room join before generating/speaking the opener. */
+        openerDelayMs?: number;
+        /** Max tokens for opener generation (LLM). */
+        openerMaxTokens?: number;
+        /** Optional topic seed override (env/config). */
+        topicSeed?: string;
     };
 }
 /**
@@ -61,4 +73,14 @@ export interface AppConfig {
  * ASR_PROVIDER, LLM_PROVIDER, TTS_PROVIDER select adapters (openai, anthropic, google, azure, stub).
  */
 export declare function loadConfig(): AppConfig;
+/** Result of configuration validation: errors block correct operation, warnings indicate likely misconfiguration. */
+export interface ConfigValidationResult {
+    errors: string[];
+    warnings: string[];
+}
+/**
+ * Validate loaded config and env: ASR, LLM, TTS credentials and Podium settings.
+ * Call after loadConfig() and log errors/warnings so operators see missing or placeholder values.
+ */
+export declare function validateConfig(config: AppConfig): ConfigValidationResult;
 //# sourceMappingURL=index.d.ts.map

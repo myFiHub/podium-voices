@@ -27,8 +27,9 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
    - **OpenAI**: `OPENAI_API_KEY` (for Whisper ASR and GPT-4/3.5).
    - **TTS**: `Google_Cloud_TTS_API_KEY` (or Azure TTS vars if using Azure).
    - **Podium** (optional for mock): `NEXT_PUBLIC_PODIUM_API_URL`, `NEXT_PUBLIC_WEBSOCKET_ADDRESS`, `NEXT_PUBLIC_OUTPOST_SERVER`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`.
-   - **Browser bot** (optional): `USE_JITSI_BOT=true` for real Jitsi audio; optional `BOT_PAGE_URL` if you host the bot page elsewhere (otherwise Node serves `bot-page/` on port 8766).
-   - **Greeting** (optional): `GREETING_TEXT` = first thing the bot says when it joins (default: "Hello! I'm the AI co-host. What would you like to talk about?"). Set to empty to disable. `GREETING_DELAY_MS` = delay in ms before speaking (default 2000).
+   - **Browser bot** (optional): `USE_JITSI_BOT=true` for real Jitsi audio. Optional `BOT_PAGE_URL` only if you host the bot page elsewhere (otherwise Node serves `bot-page/` on the bridge port). Optional `JITSI_BRIDGE_PORT` to pick the starting port (defaults to 8766; will retry multiple ports and can fall back to an ephemeral port).
+   - **Audio debug (optional)**: `DEBUG_AUDIO_FRAMES=1` enables per-frame integrity checks across the Node↔browser bridge. `SAVE_TTS_WAV=1` captures short WAVs for inspecting the TTS audio at different pipeline boundaries (saved under `debug-audio/`).
+   - **Opener / greeting** (optional): If `GREETING_TEXT` is non-empty, the bot will speak it after `GREETING_DELAY_MS`. Otherwise, if `OPENER_ENABLED=true`, the bot will generate a short storyteller-style opener (LLM) after `OPENER_DELAY_MS` (guided by `TOPIC_SEED` and outpost metadata).
 
    The agent must be **creator or cohost** of the outpost (see [podium interface considerations.md](podium%20interface%20considerations.md)). For real audio in/out, set `USE_JITSI_BOT=true` and ensure Playwright Chromium is installed (`npx playwright install chromium`).
 
@@ -51,7 +52,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 ## Bot behavior
 
-- **Starting the dialogue**: When the bot joins the room, it speaks a **greeting** after a short delay (default 2 seconds). Customize with `GREETING_TEXT`; set `GREETING_TEXT=` to disable.
+- **Starting the dialogue**: When the bot joins the room, it either speaks a fixed **greeting** (`GREETING_TEXT`) or generates a storyteller-style **opener** (LLM) if `OPENER_ENABLED=true` and `GREETING_TEXT` is empty. Use `TOPIC_SEED` to steer the opener.
 - **Responding to you**: The bot listens to **remote audio** (your mic) and replies after you finish speaking (VAD detects silence). For the bot to hear you, **unmute your microphone** in the meeting. If the bot never responds, check that your client is not muting outgoing audio and that the bot process logs show incoming audio (e.g. `USER_TRANSCRIPT` after you talk).
 
 ## Config
@@ -59,8 +60,9 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 - **ASR_PROVIDER**: `openai` (Whisper API) or `stub`.
 - **MODEL_PROVIDER** / **LLM_PROVIDER**: `openai`, `anthropic`, or `stub`.
 - **TTS_PROVIDER**: `google`, `azure`, or `stub`.
-- **Pipeline**: `VAD_SILENCE_MS`, `MAX_TURNS_IN_MEMORY`; **GREETING_TEXT** (first thing the bot says when it joins; empty = no greeting); **GREETING_DELAY_MS** (ms before speaking the greeting, default 2000).
-- **Podium**: `NEXT_PUBLIC_*`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`; **USE_JITSI_BOT** (`true` = browser bot for real Jitsi audio); **BOT_PAGE_URL** (optional; default = Node serves `bot-page/` on 8766).
+- **Pipeline**: `VAD_SILENCE_MS`, `MAX_TURNS_IN_MEMORY`; `GREETING_TEXT`, `GREETING_DELAY_MS`; `OPENER_ENABLED`, `OPENER_DELAY_MS`, `OPENER_MAX_TOKENS`, `TOPIC_SEED`.
+- **Podium**: `NEXT_PUBLIC_*`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`; **USE_JITSI_BOT** (`true` = browser bot for real Jitsi audio); **BOT_PAGE_URL** (optional; default = Node serves `bot-page/` on the bridge port, starting at 8766).
+- **Audio debug**: `DEBUG_AUDIO_FRAMES=1` adds a small per-frame header on the Node→browser TTS stream and logs `frame_ack` acks from the browser so we can verify byte-level integrity. `SAVE_TTS_WAV=1` saves short WAV captures to `debug-audio/` for offline inspection.
 
 See `.env.example` for all variables.
 
@@ -139,6 +141,24 @@ USE_JITSI_BOT=true npm run smoke
 ```
 
 See [docs/SMOKE_TEST_RUNBOOK.md](docs/SMOKE_TEST_RUNBOOK.md) for two-account smoke test, audio loop sanity checks, and reconnect/resume test.
+
+## Audio debugging (when “no audio”)
+
+When the bot joins but you don’t hear TTS (or the bot doesn’t hear you), the fastest way to pinpoint the failure is to prove each boundary in order:
+
+- **Node TTS bytes are non-silent** (contract check in logs; optional Node TX WAV capture)
+- **Browser receives the same bytes** (optional `DEBUG_AUDIO_FRAMES=1` acks)
+- **Browser WebAudio actually outputs non-silent samples** (`tx_out_max_abs`, `tx_out_nonzero`)
+- **WebRTC is actually sending audio** (`out_audio_bytes_sent` grows)
+
+Enable deep diagnostics:
+
+```bash
+LOG_LEVEL=info DEBUG_AUDIO_FRAMES=1 SAVE_TTS_WAV=1 USE_JITSI_BOT=true npm start
+```
+
+- WAV files are written under `debug-audio/` (e.g. `tts_node_tx_*.wav`, `tts_page_rx_*.wav`, `tts_page_out_*.wav`).
+- For what specific fields/logs to look for, see **[docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md)**.
 
 ## Project layout
 

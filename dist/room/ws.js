@@ -3,6 +3,8 @@
  * Podium WebSocket client.
  * Connect with ?token=<token>&timezone=<IANA>.
  * Outgoing messages must use exact keys: message_type (lowercase, e.g. "join"), outpost_uuid (snake_case).
+ *
+ * Muting/speaking: start_speaking when bot unmutes, stop_speaking when bot mutes (see docs/AGENT_MUTING_AND_SPEAKING_TIME.md).
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -99,10 +101,10 @@ class PodiumWS {
         this.send({ message_type: WS_SEND_TYPES.LEAVE, outpost_uuid: outpostUuid, data: {} });
     }
     startSpeaking(outpostUuid) {
-        this.send({ message_type: WS_SEND_TYPES.START_SPEAKING, outpost_uuid: outpostUuid });
+        this.send({ message_type: WS_SEND_TYPES.START_SPEAKING, outpost_uuid: outpostUuid, data: {} });
     }
     stopSpeaking(outpostUuid) {
-        this.send({ message_type: WS_SEND_TYPES.STOP_SPEAKING, outpost_uuid: outpostUuid });
+        this.send({ message_type: WS_SEND_TYPES.STOP_SPEAKING, outpost_uuid: outpostUuid, data: {} });
     }
     /** Reactions: data must include react_to_user_address (wallet address of target user). */
     sendReaction(outpostUuid, reactionType, reactToUserAddress) {

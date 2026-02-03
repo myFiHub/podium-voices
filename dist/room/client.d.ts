@@ -3,7 +3,7 @@
  * Uses REST (api), WebSocket (ws), and Jitsi (jitsi) to join as host; then provides
  * incoming audio stream for the pipeline and a method to push TTS output.
  */
-import type { User, OutpostModel } from "./types";
+import type { User, OutpostModel, OutpostLiveData, WSInMessage } from "./types";
 export interface RoomClientConfig {
     apiUrl: string;
     wsAddress: string;
@@ -37,6 +37,10 @@ export declare class RoomClient {
     private callbacks;
     constructor(config: RoomClientConfig);
     onAudioChunk(cb: (buffer: Buffer) => void): void;
+    /** Subscribe to raw Podium WS messages (reactions, speaking-time events, etc.). */
+    onWSMessage(cb: (msg: WSInMessage) => void): void;
+    /** Fetch latest live data snapshot (members + remaining_time). Call only after successful WS join. */
+    getLatestLiveData(): Promise<OutpostLiveData>;
     /** Run full host join flow. Returns when joined (WS + optional Jitsi). */
     join(): Promise<{
         user: User;
@@ -44,6 +48,12 @@ export declare class RoomClient {
     }>;
     /** Push TTS audio to the room (PCM 16-bit mono). */
     pushTtsAudio(buffer: Buffer): void;
+    /** Podium WS: indicate bot started speaking (UI state). */
+    startSpeaking(): void;
+    /** Podium WS: indicate bot stopped speaking (UI state). */
+    stopSpeaking(): void;
+    /** True if Podium WS is connected. */
+    wsConnected(): boolean;
     /** Health checks for watchdog: WS connected, conference alive, audio rx/tx. */
     getHealthChecks(): {
         wsConnected: () => boolean;

@@ -3,7 +3,7 @@
  * Use mock room when PODIUM_TOKEN or PODIUM_OUTPOST_UUID are not set.
  */
 
-import { loadConfig } from "./config";
+import { loadConfig, validateConfig } from "./config";
 import { createASR } from "./adapters/asr";
 import { createLLM } from "./adapters/llm";
 import { createTTS } from "./adapters/tts";
@@ -14,9 +14,27 @@ import { logger, logError } from "./logging";
 import { runWatchdogTick } from "./metrics";
 import { MockRoom } from "./room/mock";
 import { RoomClient } from "./room/client";
+import { SpeakingController } from "./room/speaking-controller";
+import { LiveState } from "./room/live-state";
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const validation = validateConfig(config);
+  for (const msg of validation.errors) {
+    logger.error({ event: "CONFIG_ERROR" }, msg);
+  }
+  for (const msg of validation.warnings) {
+    logger.warn({ event: "CONFIG_WARNING" }, msg);
+  }
+  if (validation.errors.length > 0) {
+    logger.warn(
+      { event: "CONFIG_SUMMARY", errorCount: validation.errors.length, warningCount: validation.warnings.length },
+      "Configuration has errors. Fix .env.local (see .env.example) or some features will not work."
+    );
+  } else if (validation.warnings.length === 0) {
+    logger.info({ event: "CONFIG_OK" }, "Configuration OK: .env.local loaded and required keys set.");
+  }
+
   const asr = createASR(config);
   const llm = createLLM(config);
   const tts = createTTS(config);
@@ -24,9 +42,13 @@ async function main(): Promise<void> {
   const feedbackCollector = new FeedbackCollector({ windowMs: 60_000 });
 
   let ttsSink: (buffer: Buffer) => void = () => {};
+  let speakingController: SpeakingController | null = null;
+  let liveState: LiveState | null = null;
   let roomRef: RoomClient | null = null;
   let mockRoom: MockRoom | null = null;
   let watchdogInterval: ReturnType<typeof setInterval> | null = null;
+  // Debug/diagnostics: track whether synthesized PCM is actually non-silent.
+  const ttsEnergyByUtterance = new Map<string, { bytes: number; sampleCount: number; sumSq: number; source?: string }>();
 
   const orchestrator = new Orchestrator(asr, llm, tts, memory, {
     vadSilenceMs: config.pipeline.vadSilenceMs,
@@ -34,7 +56,47 @@ async function main(): Promise<void> {
   }, {
     onUserTranscript: (text) => logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),
     onAgentReply: (text) => logger.info({ event: "AGENT_REPLY", textLength: text.length }, "Agent replied"),
-    onTtsAudio: (buffer) => ttsSink(buffer),
+    onTtsAudio: (buffer, meta) => {
+      if (meta?.utteranceId && speakingController && !speakingController.shouldPlay(meta.utteranceId)) return;
+      // Compute a cheap RMS estimate to detect "silent TTS" (all-zero buffers) which results in no audible bot audio.
+      if (meta?.utteranceId) {
+        const id = meta.utteranceId;
+        const entry = ttsEnergyByUtterance.get(id) ?? { bytes: 0, sampleCount: 0, sumSq: 0, source: meta.source };
+        entry.bytes += buffer.length;
+        // Interpret as signed 16-bit little-endian PCM. Sample every 4th value for speed (still robust enough for silence detection).
+        const len = buffer.length & ~1; // even
+        for (let off = 0; off + 2 <= len; off += 8) {
+          const s = buffer.readInt16LE(off) / 32768;
+          entry.sumSq += s * s;
+          entry.sampleCount += 1;
+        }
+        ttsEnergyByUtterance.set(id, entry);
+      }
+      ttsSink(buffer);
+    },
+    onTtsStart: (meta) => {
+      speakingController?.begin(meta.utteranceId, { source: meta.source });
+      // Initialize energy tracking.
+      if (!ttsEnergyByUtterance.has(meta.utteranceId)) {
+        ttsEnergyByUtterance.set(meta.utteranceId, { bytes: 0, sampleCount: 0, sumSq: 0, source: meta.source });
+      }
+    },
+    onTtsEnd: (meta) => {
+      speakingController?.end(meta.utteranceId, { source: meta.source });
+      const entry = ttsEnergyByUtterance.get(meta.utteranceId);
+      if (entry) {
+        const rms = entry.sampleCount > 0 ? Math.sqrt(entry.sumSq / entry.sampleCount) : 0;
+        // Only warn when suspiciously silent to keep logs clean at LOG_LEVEL=warn.
+        if (entry.bytes > 0 && rms <= 0.0001) {
+          logger.warn(
+            { event: "TTS_SILENT", utteranceId: meta.utteranceId, source: entry.source, bytes: entry.bytes, rms },
+            "TTS produced near-silence; bot audio will not be heard"
+          );
+        }
+        ttsEnergyByUtterance.delete(meta.utteranceId);
+      }
+    },
+    onBargeIn: () => speakingController?.cancelAll("barge_in_user_speech"),
   });
 
   if (config.podium.token && config.podium.outpostUuid) {
@@ -53,17 +115,70 @@ async function main(): Promise<void> {
     });
     ttsSink = (buf) => room.pushTtsAudio(buf);
     room.onAudioChunk((chunk) => orchestrator.pushAudio(chunk));
-    await room.join();
+    const joined = await room.join();
     roomRef = room;
     logger.info("Joined Podium outpost room");
-    const greetingText = config.pipeline.greetingText?.trim();
+
+    // Initialize live state (speaking-time rules) from REST snapshot + WS updates.
+    liveState = new LiveState({
+      selfAddress: joined.user.address,
+      selfUuid: joined.user.uuid,
+      creatorUuid: joined.outpost.creator_user_uuid,
+    });
+    try {
+      const snapshot = await room.getLatestLiveData();
+      liveState.applySnapshot(snapshot);
+    } catch (err) {
+      logger.warn({ event: "LIVE_STATE_SNAPSHOT_FAILED", err: (err as Error).message }, "Failed to fetch live-data snapshot; continuing");
+    }
+
+    // Feed Podium WS events into feedback sentiment and live state.
+    room.onWSMessage((msg) => {
+      feedbackCollector.handleWSMessage(msg);
+      liveState?.handleWSMessage(msg);
+      if (liveState?.isSelfTimeUpEvent(msg)) {
+        speakingController?.forceMute("user.time_is_up");
+      }
+    });
+
+    speakingController = new SpeakingController({
+      outpostUuid: config.podium.outpostUuid,
+      wsHealthy: () => room.wsConnected(),
+      canSpeakNow: () => liveState?.canSpeakNow() ?? { allowed: true },
+      startSpeaking: () => room.startSpeaking(),
+      stopSpeaking: () => room.stopSpeaking(),
+    });
+
+    const greetingText = config.pipeline.greetingText?.trim() ?? "";
     const greetingDelayMs = config.pipeline.greetingDelayMs ?? 0;
+    const openerEnabled = config.pipeline.openerEnabled ?? false;
+    const openerDelayMs = config.pipeline.openerDelayMs ?? 0;
+    const openerMaxTokens = config.pipeline.openerMaxTokens ?? 180;
+    const outpostContextParts: string[] = [];
+    if (joined.outpost.name) outpostContextParts.push(`Outpost name: ${joined.outpost.name}`);
+    if (joined.outpost.subject) outpostContextParts.push(`Subject: ${joined.outpost.subject}`);
+    if (joined.outpost.tags?.length) outpostContextParts.push(`Tags: ${joined.outpost.tags.join(", ")}`);
+    const outpostContext = outpostContextParts.join(" | ");
+    const inferredTopicSeed =
+      (config.pipeline.topicSeed?.trim() || joined.outpost.subject?.trim() || joined.outpost.name?.trim() || joined.outpost.tags?.[0]?.trim() || "");
+
     if (greetingText && greetingDelayMs >= 0) {
       setTimeout(() => {
         orchestrator.speakProactively(greetingText).catch((err) =>
           logger.warn({ event: "GREETING_FAILED", err: (err as Error).message }, "Proactive greeting failed")
         );
       }, greetingDelayMs);
+    } else if (openerEnabled && openerDelayMs >= 0) {
+      setTimeout(() => {
+        const allowed = liveState?.canSpeakNow() ?? { allowed: true };
+        if (!allowed.allowed) {
+          logger.info({ event: "OPENER_SKIPPED", reason: allowed.reason }, "Skipping opener (speaking not allowed)");
+          return;
+        }
+        orchestrator.speakOpener({ topicSeed: inferredTopicSeed, outpostContext, maxTokens: openerMaxTokens }).catch((err) =>
+          logger.warn({ event: "OPENER_FAILED", err: (err as Error).message }, "Opener failed")
+        );
+      }, openerDelayMs);
     }
     const health = room.getHealthChecks();
     let lastRx = 0;
@@ -100,14 +215,24 @@ async function main(): Promise<void> {
     mockRoom.onAudioChunk((chunk) => orchestrator.pushAudio(chunk));
     await mockRoom.join();
     logger.info("Using mock room; set PODIUM_TOKEN and PODIUM_OUTPOST_UUID to join real room");
-    const greetingText = config.pipeline.greetingText?.trim();
+    const greetingText = config.pipeline.greetingText?.trim() ?? "";
     const greetingDelayMs = config.pipeline.greetingDelayMs ?? 0;
+    const openerEnabled = config.pipeline.openerEnabled ?? false;
+    const openerDelayMs = config.pipeline.openerDelayMs ?? 0;
+    const openerMaxTokens = config.pipeline.openerMaxTokens ?? 180;
+    const topicSeed = config.pipeline.topicSeed?.trim() || "";
     if (greetingText && greetingDelayMs >= 0) {
       setTimeout(() => {
         orchestrator.speakProactively(greetingText).catch((err) =>
           logger.warn({ event: "GREETING_FAILED", err: (err as Error).message }, "Proactive greeting failed")
         );
       }, greetingDelayMs);
+    } else if (openerEnabled && openerDelayMs >= 0) {
+      setTimeout(() => {
+        orchestrator.speakOpener({ topicSeed, outpostContext: "", maxTokens: openerMaxTokens }).catch((err) =>
+          logger.warn({ event: "OPENER_FAILED", err: (err as Error).message }, "Opener failed")
+        );
+      }, openerDelayMs);
     }
   }
 

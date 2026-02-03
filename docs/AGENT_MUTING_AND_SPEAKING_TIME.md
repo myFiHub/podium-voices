@@ -107,18 +107,16 @@ So for muting/unmuting and speaking time, the agent needs: **outpost UUID**, **o
 
 | Requirement | Status | Where in codebase |
 |-------------|--------|-------------------|
-| Send **start_speaking** / **stop_speaking** | **API exists, not wired** | `PodiumWS.startSpeaking(outpostUuid)` / `PodiumWS.stopSpeaking(outpostUuid)` in `src/room/ws.ts`. Not called when TTS starts/stops. |
-| Incoming **user.started_speaking** / **user.stopped_speaking** | **Types only** | `WS_INCOMING_NAMES` in `src/room/types.ts`. No handler in `RoomClient` or main. |
-| GET **/outposts/online-data** | **API exists, not used for speaking time** | `PodiumApi.getLatestLiveData(outpostId)` in `src/room/api.ts`. Returns `OutpostLiveData` with `members: LiveMember[]`. Not called after join to read remaining_time / is_speaking. |
-| **remaining_time.updated** / **user.time_is_up** | **Types only** | `WS_INCOMING_NAMES.REMAINING_TIME_UPDATED`, `USER_TIME_IS_UP` in `src/room/types.ts`. No handler to update agent’s view of remaining_time or to mute on time_is_up. |
+| Send **start_speaking** / **stop_speaking** | **Implemented** | `SpeakingController` (`src/room/speaking-controller.ts`) emits Podium WS start/stop via `RoomClient.startSpeaking/stopSpeaking()` (`src/room/client.ts`). It is driven by TTS boundaries from the orchestrator (`src/pipeline/orchestrator.ts` callbacks wired in `src/main.ts`). |
+| Incoming **user.started_speaking** / **user.stopped_speaking** | **Implemented (state tracking)** | `RoomClient.onWSMessage()` (`src/room/client.ts`) forwards WS events; `LiveState.handleWSMessage()` (`src/room/live-state.ts`) applies started/stopped speaking to a per-address state map. |
+| GET **/outposts/online-data** | **Implemented** | `RoomClient.getLatestLiveData()` (`src/room/client.ts`) calls `PodiumApi.getLatestLiveData()` (`src/room/api.ts`). `main.ts` fetches an initial snapshot after join and applies it to `LiveState`. |
+| **remaining_time.updated** / **user.time_is_up** | **Implemented (gating + stop)** | `LiveState.handleWSMessage()` updates remaining time and time-is-up; `SpeakingController.canSpeakNow()` gate prevents `start_speaking` when time is up. On `user.time_is_up` for self, `main.ts` calls `speakingController.forceMute(\"user.time_is_up\")`. |
 | **LiveMember** (remaining_time, is_speaking, address, uuid) | **Defined** | `src/room/types.ts` – `LiveMember`, `OutpostLiveData`. |
 | **Outpost UUID, User, creator UUID** | **Available** | `RoomClient` has `config.outpostUuid`, `user`, `outpost.creator_user_uuid` after join. |
-| Jitsi bot mute/unmute | **Not implemented** | Bot page injects TTS as synthetic mic; no “mute” command to stop pushing audio. Would require bridge protocol extension and/or Jitsi API in bot page. |
+| Jitsi bot mute/unmute | **Partially implemented (audio gating)** | The bot does not toggle the Jitsi “mic” via Meet API, but it does gate outbound audio: when speaking is denied (e.g. time_is_up), `main.ts` drops TTS chunks by checking `SpeakingController.shouldPlay(utteranceId)` before calling `room.pushTtsAudio()`. A true Jitsi mic toggle would require extending the bridge protocol and/or using Jitsi Meet API in `bot-page/bot.js`. |
 
 **Suggested next steps:**
 
-1. When the pipeline **starts** sending TTS: call `ws.startSpeaking(outpostUuid)` (and only if WS healthy and, for non-creator, own `remaining_time > 0`).
-2. When the pipeline **finishes** a TTS segment: call `ws.stopSpeaking(outpostUuid)`.
-3. After join: call `api.getLatestLiveData(outpostUuid)` and maintain a small “live state” (e.g. map `address` → `{ remaining_time, is_speaking }`); treat creator as unlimited.
-4. Subscribe to WS: on **remaining_time.updated** update stored `remaining_time` for `data.address`; on **user.time_is_up** set that user as not speaking and, if self, mute and stop sending start_speaking until allowed.
-5. Optionally: extend bot bridge and/or Jitsi to mute/unmute the bot’s “mic” and keep it in sync with **start_speaking** / **stop_speaking**.
+1. Add targeted unit tests for `LiveState` + `SpeakingController` and an end-to-end smoke checklist that includes speaking-state and time-is-up behavior.
+2. Decide whether to implement a true Jitsi mic toggle (Meet API) vs keeping the current audio gating approach.
+3. If you want strict parity with Nexus countdown behavior, optionally add a local countdown (but keep server events as source of truth).

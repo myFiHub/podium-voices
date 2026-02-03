@@ -29,6 +29,14 @@ class RoomClient {
     onAudioChunk(cb) {
         this.callbacks.onAudioChunk = cb;
     }
+    /** Subscribe to raw Podium WS messages (reactions, speaking-time events, etc.). */
+    onWSMessage(cb) {
+        this.ws.onMessage(cb);
+    }
+    /** Fetch latest live data snapshot (members + remaining_time). Call only after successful WS join. */
+    async getLatestLiveData() {
+        return this.api.getLatestLiveData(this.config.outpostUuid);
+    }
     /** Run full host join flow. Returns when joined (WS + optional Jitsi). */
     async join() {
         this.user = await this.api.getProfile();
@@ -80,6 +88,18 @@ class RoomClient {
     /** Push TTS audio to the room (PCM 16-bit mono). */
     pushTtsAudio(buffer) {
         this.jitsi?.pushAudio(buffer);
+    }
+    /** Podium WS: indicate bot started speaking (UI state). */
+    startSpeaking() {
+        this.ws.startSpeaking(this.config.outpostUuid);
+    }
+    /** Podium WS: indicate bot stopped speaking (UI state). */
+    stopSpeaking() {
+        this.ws.stopSpeaking(this.config.outpostUuid);
+    }
+    /** True if Podium WS is connected. */
+    wsConnected() {
+        return this.ws.isConnected();
     }
     /** Health checks for watchdog: WS connected, conference alive, audio rx/tx. */
     getHealthChecks() {

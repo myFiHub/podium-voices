@@ -3,6 +3,7 @@
  * Load from .env.local (or process.env). Do not commit secrets.
  */
 
+import * as fs from "fs";
 import * as path from "path";
 import { config as loadEnv } from "dotenv";
 
@@ -71,6 +72,14 @@ export interface AppConfig {
     greetingText?: string;
     /** Delay (ms) after room join before speaking the greeting (allows participants to hear; 0 = immediate). */
     greetingDelayMs?: number;
+    /** If true, generate a storyteller-style opener via LLM after join (when greetingText is empty). */
+    openerEnabled?: boolean;
+    /** Delay (ms) after room join before generating/speaking the opener. */
+    openerDelayMs?: number;
+    /** Max tokens for opener generation (LLM). */
+    openerMaxTokens?: number;
+    /** Optional topic seed override (env/config). */
+    topicSeed?: string;
   };
 }
 
@@ -136,17 +145,105 @@ export function loadConfig(): AppConfig {
     pipeline: {
       vadSilenceMs: parseInt(getEnv("VAD_SILENCE_MS") || "500", 10) || 500,
       maxTurnsInMemory: parseInt(getEnv("MAX_TURNS_IN_MEMORY") || "50", 10) || 50,
-      /** GREETING_TEXT unset = default greeting; set to empty string = no greeting. */
-      greetingText: (() => {
-        const v = getEnv("GREETING_TEXT");
-        return v === undefined ? "Hello! I'm the AI co-host. What would you like to talk about?" : v;
-      })(),
+      /** GREETING_TEXT unset/empty = no greeting (use opener instead). */
+      greetingText: getEnv("GREETING_TEXT") ?? "",
       greetingDelayMs: (() => {
         const v = getEnv("GREETING_DELAY_MS");
         if (v == null || v === "") return 2000;
         const n = parseInt(v, 10);
         return Number.isNaN(n) || n < 0 ? 2000 : n;
       })(),
+      openerEnabled: getEnv("OPENER_ENABLED") === "true" || getEnv("OPENER_ENABLED") === "1" || getEnv("OPENER_ENABLED") === undefined,
+      openerDelayMs: (() => {
+        const v = getEnv("OPENER_DELAY_MS");
+        if (v == null || v === "") return 2500;
+        const n = parseInt(v, 10);
+        return Number.isNaN(n) || n < 0 ? 2500 : n;
+      })(),
+      openerMaxTokens: (() => {
+        const v = getEnv("OPENER_MAX_TOKENS");
+        if (v == null || v === "") return 180;
+        const n = parseInt(v, 10);
+        return Number.isNaN(n) || n <= 0 ? 180 : n;
+      })(),
+      topicSeed: getEnv("TOPIC_SEED"),
     },
   };
+}
+
+/** Result of configuration validation: errors block correct operation, warnings indicate likely misconfiguration. */
+export interface ConfigValidationResult {
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Validate loaded config and env: ASR, LLM, TTS credentials and Podium settings.
+ * Call after loadConfig() and log errors/warnings so operators see missing or placeholder values.
+ */
+export function validateConfig(config: AppConfig): ConfigValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // --- Env file ---
+  if (!fs.existsSync(envPath)) {
+    warnings.push(`No .env.local found at ${envPath}. Using process.env only. Copy .env.example to .env.local and set values.`);
+  }
+
+  // --- ASR ---
+  if (config.asr.provider === "openai" && !config.asr.openaiApiKey?.trim()) {
+    errors.push("ASR is set to 'openai' but OPENAI_API_KEY is missing or empty in .env.local. Speech-to-text will use stub (no transcription).");
+  }
+
+  // --- LLM ---
+  if (config.llm.provider === "openai" && !config.llm.openaiApiKey?.trim()) {
+    errors.push("LLM is set to 'openai' but OPENAI_API_KEY is missing or empty in .env.local. Responses will use stub.");
+  }
+  if (config.llm.provider === "anthropic" && !config.llm.anthropicApiKey?.trim()) {
+    errors.push("LLM is set to 'anthropic' but ANTHROPIC_API_KEY is missing or empty in .env.local.");
+  }
+
+  // --- TTS: Google ---
+  if (config.tts.provider === "google") {
+    const hasApiKey = Boolean(config.tts.googleApiKey?.trim());
+    const adcPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+    if (!hasApiKey && !adcPath) {
+      errors.push(
+        "TTS is set to 'google' but neither Google_Cloud_TTS_API_KEY nor GOOGLE_APPLICATION_CREDENTIALS is set. " +
+          "Set Google_Cloud_TTS_API_KEY in .env.local (and enable Text-to-Speech API), or set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON path. See .env.example."
+      );
+    }
+    if (adcPath && !fs.existsSync(adcPath)) {
+      errors.push(`GOOGLE_APPLICATION_CREDENTIALS is set to '${adcPath}' but the file does not exist. TTS will fail at runtime.`);
+    }
+  }
+
+  // --- TTS: Azure ---
+  if (config.tts.provider === "azure") {
+    if (!config.tts.azureKey?.trim()) {
+      errors.push("TTS is set to 'azure' but AZURE_TTS_KEY is missing or empty in .env.local.");
+    }
+    if (!config.tts.azureRegion?.trim()) {
+      errors.push("TTS is set to 'azure' but AZURE_TTS_REGION is missing or empty in .env.local.");
+    }
+  }
+
+  // --- Podium (when running in room mode) ---
+  const hasPodiumToken = Boolean(config.podium.token?.trim());
+  const hasOutpostUuid = Boolean(config.podium.outpostUuid?.trim());
+  if (hasPodiumToken && !hasOutpostUuid) {
+    warnings.push("PODIUM_TOKEN is set but PODIUM_OUTPOST_UUID is missing. Room client will not start. Set both in .env.local for live outpost mode.");
+  }
+  if (!hasPodiumToken && hasOutpostUuid) {
+    warnings.push("PODIUM_OUTPOST_UUID is set but PODIUM_TOKEN is missing. Room client will not start. Set both in .env.local for live outpost mode.");
+  }
+  const apiUrlPlaceholder = /example\.com|your-podium|placeholder/i.test(config.podium.apiUrl || "");
+  const wsPlaceholder = /example\.com|your-ws|placeholder/i.test(config.podium.wsAddress || "");
+  if ((hasPodiumToken || hasOutpostUuid) && (apiUrlPlaceholder || wsPlaceholder)) {
+    warnings.push(
+      "Podium API or WebSocket URL looks like a placeholder. Set NEXT_PUBLIC_PODIUM_API_URL and NEXT_PUBLIC_WEBSOCKET_ADDRESS to your real endpoints in .env.local."
+    );
+  }
+
+  return { errors, warnings };
 }

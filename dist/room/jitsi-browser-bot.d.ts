@@ -14,12 +14,25 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private page;
     private bridgePort;
     private txBuffer;
+    private txQueue;
+    private txInterval;
     private closed;
     private rxBytesTotal;
     private txBytesTotal;
     private lastRxTxAt;
+    private statsInterval;
+    private lastBotStatsWarnAt;
+    private lastStats;
+    private loggedTxFrameSample;
+    private txSeq;
+    private readonly debugFrames;
+    private readonly saveWav;
+    private wavBuffers;
+    private wavBytes;
+    private wroteWav;
     constructor(config: JitsiConfig);
     onIncomingAudio(callback: (buffer: Buffer, sampleRate: number) => void): void;
+    private flushTxFrames;
     pushAudio(buffer: Buffer): void;
     /** True if browser and bridge are alive (for watchdog). */
     isAlive(): boolean;

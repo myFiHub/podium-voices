@@ -2,6 +2,8 @@
  * Podium WebSocket client.
  * Connect with ?token=<token>&timezone=<IANA>.
  * Outgoing messages must use exact keys: message_type (lowercase, e.g. "join"), outpost_uuid (snake_case).
+ *
+ * Muting/speaking: start_speaking when bot unmutes, stop_speaking when bot mutes (see docs/AGENT_MUTING_AND_SPEAKING_TIME.md).
  */
 import type { WSOutMessage, WSInMessage } from "./types";
 export interface PodiumWSConfig {

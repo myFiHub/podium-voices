@@ -8,8 +8,10 @@ import * as http from "http";
 import * as path from "path";
 import * as fs from "fs";
 import type { JitsiConfig, IJitsiRoom } from "./jitsi";
+import { pcmToWav } from "../pipeline/audio-utils";
 import {
   BRIDGE_FRAME_BYTES,
+  BRIDGE_FRAME_MS,
   VAD_SAMPLE_RATE,
   resample48kTo16k,
   chunk48k20ms,
@@ -17,7 +19,8 @@ import {
 import { logger } from "../logging";
 
 const DEFAULT_BRIDGE_PORT = 8766;
-const BRIDGE_PORT_RETRY_COUNT = 5;
+const BRIDGE_PORT_RETRY_COUNT = 25;
+const MAX_TX_BUFFER_BYTES = 2 * 1024 * 1024; // 2MB of 48kHz s16le (~21s) safety cap.
 
 /** Strip protocol and path so libUrl and bot config always use a valid hostname. */
 function domainHostOnly(domain: string): string {
@@ -35,10 +38,22 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private page: import("playwright").Page | null = null;
   private bridgePort = DEFAULT_BRIDGE_PORT;
   private txBuffer = Buffer.alloc(0);
+  private txQueue: Buffer[] = [];
+  private txInterval: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private rxBytesTotal = 0;
   private txBytesTotal = 0;
   private lastRxTxAt = 0;
+  private statsInterval: ReturnType<typeof setInterval> | null = null;
+  private lastBotStatsWarnAt = 0;
+  private lastStats: Record<string, unknown> | null = null;
+  private loggedTxFrameSample = false;
+  private txSeq = 0;
+  private readonly debugFrames = process.env.DEBUG_AUDIO_FRAMES === "1";
+  private readonly saveWav = process.env.SAVE_TTS_WAV === "1";
+  private wavBuffers: Buffer[] = [];
+  private wavBytes = 0;
+  private wroteWav = false;
 
   constructor(config: JitsiConfig) {
     this.config = config;
@@ -48,17 +63,53 @@ export class JitsiBrowserBot implements IJitsiRoom {
     this.onIncomingAudioCb = callback;
   }
 
-  pushAudio(buffer: Buffer): void {
-    if (this.closed || !this.ws || this.ws.readyState !== 1) return;
-    this.txBuffer = Buffer.concat([this.txBuffer, buffer]);
+  private flushTxFrames(): void {
+    if (this.closed) return;
+    if (this.txBuffer.length < BRIDGE_FRAME_BYTES) return;
     const frames = chunk48k20ms(this.txBuffer);
     const consumed = frames.length * BRIDGE_FRAME_BYTES;
     this.txBuffer = consumed >= this.txBuffer.length ? Buffer.alloc(0) : this.txBuffer.subarray(consumed);
     for (const frame of frames) {
-      this.ws.send(frame);
-      this.txBytesTotal += frame.length;
-      this.lastRxTxAt = Date.now();
+      // Copy: `frame` is a Buffer slice.
+      this.txQueue.push(Buffer.from(frame));
     }
+  }
+
+  pushAudio(buffer: Buffer): void {
+    if (this.closed) return;
+    if (buffer.length === 0) return;
+
+    // Debug-only: capture raw PCM sent toward the bot page so we can save a WAV and inspect it.
+    if (this.saveWav && !this.wroteWav) {
+      this.wavBuffers.push(buffer);
+      this.wavBytes += buffer.length;
+      // Cap capture to ~3 seconds at 48k mono s16le: 48000*2*3 = 288000 bytes.
+      if (this.wavBytes >= 288000) {
+        try {
+          const pcm = Buffer.concat(this.wavBuffers, this.wavBytes);
+          const wav = pcmToWav(pcm, 48000);
+          const outDir = path.resolve(process.cwd(), "debug-audio");
+          if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+          const outPath = path.join(outDir, `tts_node_tx_${Date.now()}.wav`);
+          fs.writeFileSync(outPath, wav);
+          logger.warn({ event: "AUDIO_WAV_SAVED", where: "node_tx", path: outPath, bytes: wav.length }, "Saved node TX WAV capture");
+          this.wroteWav = true;
+        } catch (e) {
+          logger.warn({ event: "AUDIO_WAV_SAVE_FAILED", where: "node_tx", err: (e as Error).message }, "Failed saving node TX WAV");
+        }
+      }
+    }
+
+    this.txBuffer = Buffer.concat([this.txBuffer, buffer]);
+
+    // Prevent unbounded buffering if the bridge isn't connected yet (or if TTS outruns WS).
+    if (this.txBuffer.length > MAX_TX_BUFFER_BYTES) {
+      const dropped = this.txBuffer.length - MAX_TX_BUFFER_BYTES;
+      this.txBuffer = this.txBuffer.subarray(dropped);
+      logger.warn({ event: "BOT_TX_BUFFER_DROPPED", droppedBytes: dropped }, "Dropping oldest buffered TTS audio (tx buffer cap)");
+    }
+
+    this.flushTxFrames();
   }
 
   /** True if browser and bridge are alive (for watchdog). */
@@ -73,6 +124,11 @@ export class JitsiBrowserBot implements IJitsiRoom {
 
   async leave(): Promise<void> {
     this.closed = true;
+    if (this.statsInterval) clearInterval(this.statsInterval);
+    this.statsInterval = null;
+    if (this.txInterval) clearInterval(this.txInterval);
+    this.txInterval = null;
+    this.txQueue = [];
     if (this.page) try { await this.page.close(); } catch (e) { logger.warn({ err: e }, "Bot page close"); }
     this.page = null;
     if (this.browser) try { await this.browser.close(); } catch (e) { logger.warn({ err: e }, "Bot browser close"); }
@@ -186,7 +242,27 @@ export class JitsiBrowserBot implements IJitsiRoom {
         throw err;
       }
     }
-    if (!bound) throw new Error("Could not bind bridge to any port in [" + startPort + ".." + maxPort + "]");
+    if (!bound) {
+      // As a last resort, bind to an ephemeral port chosen by the OS.
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: NodeJS.ErrnoException) => {
+          this.server!.removeListener("error", onError);
+          reject(err);
+        };
+        this.server!.once("error", onError);
+        this.server!.listen(0, "0.0.0.0", () => {
+          this.server!.removeListener("error", onError);
+          const addr = this.server!.address();
+          if (addr && typeof addr === "object") this.bridgePort = addr.port;
+          bound = true;
+          resolve();
+        });
+      });
+      logger.warn(
+        { event: "BRIDGE_PORT_BOUND_RANDOM", port: this.bridgePort, attemptedStartPort: startPort, attemptedMaxPort: maxPort },
+        "Bridge bound to random port after conflicts"
+      );
+    }
 
     const BRIDGE_CONNECT_TIMEOUT_MS = 15000;
     let resolveBridgeConnected: () => void;
@@ -209,7 +285,26 @@ export class JitsiBrowserBot implements IJitsiRoom {
         }
         try {
           const str = typeof data === "string" ? data : data.toString("utf8");
-          const msg = JSON.parse(str) as { type?: string; success?: boolean; error?: string };
+          const msg = JSON.parse(str) as {
+            type?: string;
+            success?: boolean;
+            error?: string;
+            stats?: Record<string, unknown>;
+            message?: string;
+            name?: string;
+            stack?: string;
+            filename?: string;
+            lineno?: number;
+            colno?: number;
+            seq?: number;
+            xorHeader?: number;
+            xorComputed?: number;
+            maxAbs?: number;
+            nonZero?: number;
+            pcm48?: string;
+            label?: string;
+            pcm48_b64?: string;
+          };
           if (msg.type === "join_result") {
             if (msg.success) {
               logger.info({ event: "BOT_JITSI_JOINED" }, "Bot joined Jitsi conference");
@@ -218,12 +313,148 @@ export class JitsiBrowserBot implements IJitsiRoom {
             }
           } else if (msg.type === "join_error") {
             logger.error({ event: "BOT_JOIN_ERROR", error: msg.error }, "Bot join failed (e.g. script load): " + (msg.error ?? "unknown"));
+          } else if (msg.type === "page_error") {
+            logger.error(
+              {
+                event: "BOT_PAGE_ERROR_DETAIL",
+                name: msg.name,
+                message: msg.message,
+                filename: msg.filename,
+                lineno: msg.lineno,
+                colno: msg.colno,
+                stack: msg.stack,
+              },
+              "Bot page window.onerror"
+            );
+          } else if (msg.type === "unhandled_rejection") {
+            logger.error(
+              { event: "BOT_PAGE_UNHANDLED_REJECTION", name: msg.name, message: msg.message, stack: msg.stack },
+              "Bot page unhandled rejection"
+            );
+          } else if (msg.type === "track_disposed") {
+            logger.warn({ event: "BOT_TRACK_DISPOSED", detail: msg }, "Bot synthetic track disposed unexpectedly");
+          } else if (msg.type === "frame_ack") {
+            logger.warn(
+              {
+                event: "BOT_FRAME_ACK",
+                seq: msg.seq,
+                xorHeader: msg.xorHeader,
+                xorComputed: msg.xorComputed,
+                maxAbs: msg.maxAbs,
+                nonZero: msg.nonZero,
+              },
+              "Bot page received debug audio frame"
+            );
+          } else if (msg.type === "stats" && msg.stats) {
+            this.lastStats = msg.stats;
+            // Only warn on suspicious states to keep logs clean at LOG_LEVEL=warn.
+            const now = Date.now();
+            const confState = typeof msg.stats.conference_state === "string" ? msg.stats.conference_state : "";
+            const audioCtx = typeof msg.stats.audio_context_state === "string" ? msg.stats.audio_context_state : "";
+            const iceState = typeof msg.stats.ice_state === "string" ? msg.stats.ice_state : "";
+            const txBytesFromPage = typeof msg.stats.tx_bytes === "number" ? msg.stats.tx_bytes : 0;
+            const txRms = typeof msg.stats.tx_rms === "number" ? msg.stats.tx_rms : undefined;
+            const txFrameRms = typeof msg.stats.tx_frame_rms === "number" ? msg.stats.tx_frame_rms : undefined;
+            const txFrameMaxAbs = typeof msg.stats.tx_frame_max_abs === "number" ? msg.stats.tx_frame_max_abs : undefined;
+            const txFrameNonZero = typeof msg.stats.tx_frame_nonzero === "number" ? msg.stats.tx_frame_nonzero : undefined;
+            const txFrameXor = typeof msg.stats.tx_frame_xor === "number" ? msg.stats.tx_frame_xor : undefined;
+
+            const shouldWarn =
+              (confState && confState !== "joined") ||
+              (audioCtx && audioCtx !== "running") ||
+              (iceState && (iceState === "failed" || iceState === "disconnected")) ||
+              // If Node has pushed audio but the page hasn't received bytes, the bridge TX path is broken.
+              (this.txBytesTotal > 0 && txBytesFromPage === 0) ||
+              // If the page is receiving mic frames but the output RMS stays ~0, the synthetic mic graph is silent.
+              (txBytesFromPage > 0 && txRms !== undefined && txRms <= 0.0001) ||
+              // If incoming frames are silent, TTS audio is likely silent (or wrong format).
+              (txBytesFromPage > 0 && txFrameRms !== undefined && txFrameRms <= 0.0001) ||
+              (txBytesFromPage > 0 && txFrameMaxAbs !== undefined && txFrameMaxAbs === 0) ||
+              (txBytesFromPage > 0 && txFrameNonZero !== undefined && txFrameNonZero === 0) ||
+              (txBytesFromPage > 0 && txFrameXor !== undefined && txFrameXor === 0);
+            if (shouldWarn && now - this.lastBotStatsWarnAt > 60_000) {
+              this.lastBotStatsWarnAt = now;
+              logger.warn({ event: "BOT_PAGE_STATS_WARN", stats: msg.stats }, "Bot page stats indicate potential audio/connectivity issue");
+            }
+          } else if (msg.type === "wav_capture" && typeof msg.pcm48_b64 === "string") {
+            try {
+              const label = (msg.label ?? "page").replace(/[^a-z0-9_-]/gi, "_");
+              const pcm = Buffer.from(msg.pcm48_b64, "base64");
+              const wav = pcmToWav(pcm, 48000);
+              const outDir = path.resolve(process.cwd(), "debug-audio");
+              if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+              const outPath = path.join(outDir, `tts_${label}_${Date.now()}.wav`);
+              fs.writeFileSync(outPath, wav);
+              logger.warn({ event: "AUDIO_WAV_SAVED", where: label, path: outPath, bytes: wav.length }, "Saved page WAV capture");
+            } catch (e) {
+              logger.warn({ event: "AUDIO_WAV_SAVE_FAILED", where: "page", err: (e as Error).message }, "Failed saving page WAV");
+            }
           }
         } catch {
           // ignore non-JSON or parse errors
         }
       });
       ws.on("close", () => { this.ws = null; });
+
+      // If TTS was produced before the bridge connected, flush it now.
+      this.flushTxFrames();
+
+      // Start paced sender: send exactly one 20ms frame per tick.
+      if (this.txInterval) clearInterval(this.txInterval);
+      this.txInterval = setInterval(() => {
+        try {
+          if (this.closed || !this.ws || this.ws.readyState !== 1) return;
+          const frame = this.txQueue.shift();
+          if (!frame) return;
+
+          // Contract check (debug): log a single sample of outgoing PCM to ensure it isn't all-zero at send time.
+          if (!this.loggedTxFrameSample && frame.length === BRIDGE_FRAME_BYTES) {
+            this.loggedTxFrameSample = true;
+            let maxAbs = 0;
+            let nonZero = 0;
+            let xor = 0;
+            for (let off = 0; off + 2 <= frame.length; off += 2) {
+              const s = frame.readInt16LE(off);
+              const a = Math.abs(s);
+              if (a > maxAbs) maxAbs = a;
+              if (s !== 0) nonZero++;
+            }
+            for (let i = 0; i < frame.length; i++) xor ^= frame[i]!;
+            logger.warn(
+              { event: "BOT_TX_FRAME_SAMPLE", frameBytes: frame.length, maxAbs, nonZero, xor },
+              "Outgoing bridge frame sample (s16le) for contract verification"
+            );
+          }
+
+          if (this.debugFrames) {
+            const seq = this.txSeq++ >>> 0;
+            let xor = 0;
+            for (let i = 0; i < frame.length; i++) xor ^= frame[i]!;
+            const header = Buffer.allocUnsafe(5);
+            header.writeUInt32LE(seq, 0);
+            header.writeUInt8(xor & 0xff, 4);
+            this.ws.send(Buffer.concat([header, frame]));
+          } else {
+            this.ws.send(frame);
+          }
+          this.txBytesTotal += frame.length;
+          this.lastRxTxAt = Date.now();
+        } catch {
+          // ignore
+        }
+      }, BRIDGE_FRAME_MS);
+
+      // Poll for bot stats (jitter buffer, AudioContext state). Warn only when unhealthy.
+      if (this.statsInterval) clearInterval(this.statsInterval);
+      this.statsInterval = setInterval(() => {
+        try {
+          if (this.closed || !this.ws || this.ws.readyState !== 1) return;
+          this.ws.send(JSON.stringify({ type: "get_stats" }));
+        } catch {
+          // ignore
+        }
+      }, 5000);
+
       const host = domainHostOnly(this.config.domain);
       const joinConfig: Record<string, unknown> = {
         domain: host,
@@ -257,12 +488,22 @@ export class JitsiBrowserBot implements IJitsiRoom {
     });
     this.page = await context.newPage();
     this.page.on("pageerror", (err) => {
-      logger.warn({ event: "BOT_PAGE_ERROR", message: err.message }, "Bot page JS error: " + err.message);
+      logger.warn(
+        { event: "BOT_PAGE_ERROR", name: (err as Error).name, message: err.message, stack: (err as Error).stack },
+        "Bot page JS error: " + err.message
+      );
     });
     this.page.on("console", (msg) => {
       const text = msg.text();
       const type = msg.type();
-      logger.info({ event: "BOT_CONSOLE", type, text }, "Bot console: " + type + " " + text);
+      // Forward only high-signal console output at warn/error. Everything else is debug to avoid log floods.
+      if (type === "error") {
+        logger.error({ event: "BOT_CONSOLE", type, text }, "Bot console: " + type + " " + text);
+      } else if (type === "warning") {
+        logger.warn({ event: "BOT_CONSOLE", type, text }, "Bot console: " + type + " " + text);
+      } else {
+        logger.debug({ event: "BOT_CONSOLE", type, text }, "Bot console: " + type + " " + text);
+      }
     });
     this.page.on("websocket", (ws) => {
       logger.info({ event: "PW_WEBSOCKET_CREATED", url: ws.url() }, "Playwright: WebSocket created");
@@ -270,7 +511,40 @@ export class JitsiBrowserBot implements IJitsiRoom {
       ws.on("framereceived", (e) => logger.debug({ event: "PW_WS_RECV", payload: e.payload }, "PW WS recv"));
       ws.on("close", () => logger.info({ event: "PW_WS_CLOSE" }, "Playwright: WebSocket closed"));
     });
-    const pageUrl = this.config.botPageUrl || `http://127.0.0.1:${this.bridgePort}/bot.html?ws=ws://127.0.0.1:${this.bridgePort}/bridge`;
+    // If BOT_PAGE_URL is set, make it robust:
+    // - Ensure it points at the actual bridge port when using localhost/127.0.0.1.
+    // - Ensure the bot page has the ?ws= bridge param; otherwise it defaults to ws://127.0.0.1:8766/bridge and breaks if port differs.
+    const defaultPageUrl = `http://127.0.0.1:${this.bridgePort}/bot.html?ws=ws://127.0.0.1:${this.bridgePort}/bridge`;
+    let pageUrl = defaultPageUrl;
+    if (!this.config.botPageUrl && process.env.SAVE_TTS_WAV === "1") {
+      try {
+        const u = new URL(pageUrl);
+        if (!u.searchParams.has("saveWav")) u.searchParams.set("saveWav", "1");
+        pageUrl = u.toString();
+      } catch {
+        // ignore
+      }
+    }
+    if (this.config.botPageUrl) {
+      try {
+        const u = new URL(this.config.botPageUrl);
+        if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
+          u.hostname = "127.0.0.1";
+          u.port = String(this.bridgePort);
+        }
+        if (!u.searchParams.has("ws")) {
+          u.searchParams.set("ws", `ws://127.0.0.1:${this.bridgePort}/bridge`);
+        }
+        // Debug-only: enable WAV capture from bot page.
+        if (process.env.SAVE_TTS_WAV === "1" && !u.searchParams.has("saveWav")) {
+          u.searchParams.set("saveWav", "1");
+        }
+        pageUrl = u.toString();
+      } catch {
+        // Fall back to the known-good default if the URL is invalid.
+        pageUrl = defaultPageUrl;
+      }
+    }
     await this.page.goto(pageUrl, { waitUntil: "load", timeout: 15000 });
     logger.info({ event: "BOT_PAGE_LOADED", url: pageUrl }, "Bot page loaded");
     const userAgent = await this.page.evaluate("navigator.userAgent");
