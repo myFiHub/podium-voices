@@ -54,7 +54,23 @@ LOG_LEVEL=info DEBUG_AUDIO_FRAMES=1 SAVE_TTS_WAV=1 USE_JITSI_BOT=true npm start
 2. Force a reconnect: stop the process (SIGINT), then restart: `USE_JITSI_BOT=true npm start` (same outpost).
 3. Assert the bot rejoins and produces an audible reply within 60 seconds after the human speaks again.
 
-## 4. Automated smoke script (optional)
+## 4. Bot dropped from call (you're alone in the room)
+
+If the bot participant disappears from the outpost and you see yourself alone in the room (and you did **not** stop the Node process):
+
+1. **Check the terminal** where `npm start` is running:
+   - **`BOT_BRIDGE_DISCONNECTED`** — The browser’s WebSocket to Node closed (page closed, crash, or Jitsi/network caused the page to go away). The bot has left the call from the room’s perspective.
+   - **`BOT_PAGE_CLOSED`** — The Playwright bot page (browser tab) closed or crashed.
+   - **`BOT_PAGE_ERROR_DETAIL`** / **`BOT_PAGE_UNHANDLED_REJECTION`** — A JS error may have preceded the drop.
+
+2. **Get the bot back:**
+   - Stop the process if it’s still running (Ctrl+C).
+   - Start again: `USE_JITSI_BOT=true npm start` (same `PODIUM_OUTPOST_UUID` and `PODIUM_TOKEN`).
+   - In the Podium web app, stay in (or rejoin) the same outpost; the bot will rejoin as a new participant.
+
+3. **If the bot keeps dropping:** Check Jitsi/server logs (e.g. Prosody, JVB) for kicks or connection timeouts. Jitsi warnings in the bot console (e.g. “invalid session id”, “description does not look like plan-b”, “AudioOutputProblemDetector”) can precede a teardown; improving network/TURN or server config may reduce drops.
+
+## 5. Automated smoke script (optional)
 
 Run the smoke script to start the process for a fixed duration and check logs for transcript and reply:
 
@@ -64,3 +80,12 @@ USE_JITSI_BOT=true npm run smoke
 ```
 
 See `scripts/smoke.js` for duration (default 2 minutes) and pass/fail criteria (USER_TRANSCRIPT and AGENT_REPLY in logs). The script exits 0; it reports PASS when both events were seen.
+
+---
+
+**Quick reference — log events when the bot leaves the call:**
+
+| Event | Meaning |
+|-------|--------|
+| `BOT_BRIDGE_DISCONNECTED` | Bridge WebSocket closed; bot is no longer in the room. Restart process to rejoin. |
+| `BOT_PAGE_CLOSED` | Bot browser page closed or crashed. Restart process to rejoin. |

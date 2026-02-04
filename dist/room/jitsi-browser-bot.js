@@ -54,6 +54,21 @@ function domainHostOnly(domain) {
         return domain;
     return domain.replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim() || domain;
 }
+/**
+ * Summarize a Playwright WS frame payload for logging (avoids dumping huge buffers of zeros).
+ * Returns a small object with byte length and optional type; never the full buffer.
+ */
+function summarizePayload(payload) {
+    if (Buffer.isBuffer(payload)) {
+        return { payloadBytes: payload.length, payloadType: "Buffer" };
+    }
+    if (payload && typeof payload === "object" && "type" in payload && "data" in payload) {
+        const data = payload.data;
+        const len = Array.isArray(data) ? data.length : 0;
+        return { payloadBytes: len, payloadType: payload.type };
+    }
+    return { payloadBytes: 0, payloadType: undefined };
+}
 class JitsiBrowserBot {
     config;
     onIncomingAudioCb = null;
@@ -72,6 +87,7 @@ class JitsiBrowserBot {
     lastRxTxAt = 0;
     statsInterval = null;
     lastBotStatsWarnAt = 0;
+    jitsiJoinedAt = 0;
     lastStats = null;
     loggedTxFrameSample = false;
     txSeq = 0;
@@ -80,11 +96,74 @@ class JitsiBrowserBot {
     wavBuffers = [];
     wavBytes = 0;
     wroteWav = false;
+    /** Ring buffer for room-audio level diagnostic: last 5s of 16k resampled PCM. */
+    static RX_LEVEL_RING_FRAMES = 250;
+    static RX_LEVEL_FRAME_BYTES = 640; // 20ms at 16kHz
+    rxLevelRing = null;
+    rxLevelFrameCount = 0;
+    lastRoomAudioSilentWarnAt = 0;
+    lastMixerLevelLogAt = 0;
     constructor(config) {
         this.config = config;
     }
     onIncomingAudio(callback) {
         this.onIncomingAudioCb = callback;
+    }
+    /**
+     * Accumulate resampled room audio and periodically log RMS/maxAbs so we can see if
+     * Node is receiving non-silent audio (if levels are ~0, VAD will never fire).
+     */
+    updateRoomAudioLevel(pcm16) {
+        if (pcm16.length < JitsiBrowserBot.RX_LEVEL_FRAME_BYTES)
+            return;
+        if (!this.rxLevelRing) {
+            this.rxLevelRing = Buffer.alloc(JitsiBrowserBot.RX_LEVEL_RING_FRAMES * JitsiBrowserBot.RX_LEVEL_FRAME_BYTES);
+        }
+        const ring = this.rxLevelRing;
+        const slot = this.rxLevelFrameCount % JitsiBrowserBot.RX_LEVEL_RING_FRAMES;
+        const offset = slot * JitsiBrowserBot.RX_LEVEL_FRAME_BYTES;
+        pcm16.copy(ring, offset, 0, Math.min(pcm16.length, JitsiBrowserBot.RX_LEVEL_FRAME_BYTES));
+        this.rxLevelFrameCount++;
+        if (this.rxLevelFrameCount >= JitsiBrowserBot.RX_LEVEL_RING_FRAMES &&
+            this.rxLevelFrameCount % JitsiBrowserBot.RX_LEVEL_RING_FRAMES === 0) {
+            let sumSq = 0;
+            let maxAbs = 0;
+            const len = ring.length & ~1;
+            for (let i = 0; i + 2 <= len; i += 2) {
+                const s = ring.readInt16LE(i);
+                const a = Math.abs(s);
+                if (a > maxAbs)
+                    maxAbs = a;
+                sumSq += s * s;
+            }
+            const numSamples = len / 2;
+            const rms = numSamples > 0 ? Math.sqrt(sumSq / numSamples) : 0;
+            const isSilent = rms <= 0 && maxAbs <= 0;
+            const now = Date.now();
+            const ROOM_AUDIO_SILENT_WARN_INTERVAL_MS = 60_000;
+            if (isSilent) {
+                if (now - this.lastRoomAudioSilentWarnAt >= ROOM_AUDIO_SILENT_WARN_INTERVAL_MS) {
+                    this.lastRoomAudioSilentWarnAt = now;
+                    logging_1.logger.warn({
+                        event: "ROOM_AUDIO_RX_LEVEL",
+                        rms: 0,
+                        maxAbs: 0,
+                        frames: JitsiBrowserBot.RX_LEVEL_RING_FRAMES,
+                        windowSec: (JitsiBrowserBot.RX_LEVEL_RING_FRAMES * 20) / 1000,
+                    }, "Room audio at Node is silent. Ensure the participant is unmuted in the meeting and their mic is working; check ROOM_MIXER_LEVEL (mixer_max_abs) in logs — if that is also 0, the remote track is silent in the browser.");
+                }
+            }
+            else {
+                this.lastRoomAudioSilentWarnAt = 0;
+                logging_1.logger.info({
+                    event: "ROOM_AUDIO_RX_LEVEL",
+                    rms: Math.round(rms),
+                    maxAbs,
+                    frames: JitsiBrowserBot.RX_LEVEL_RING_FRAMES,
+                    windowSec: (JitsiBrowserBot.RX_LEVEL_RING_FRAMES * 20) / 1000,
+                }, "Room audio level at Node (if rms/maxAbs near 0, VAD will not detect speech; raise mic or lower VAD_ENERGY_THRESHOLD)");
+            }
+        }
     }
     flushTxFrames() {
         if (this.closed)
@@ -317,6 +396,7 @@ class JitsiBrowserBot {
                     this.rxBytesTotal += data.length;
                     this.lastRxTxAt = Date.now();
                     const pcm16 = (0, audio_bridge_protocol_1.resample48kTo16k)(data);
+                    this.updateRoomAudioLevel(pcm16);
                     this.onIncomingAudioCb?.(pcm16, audio_bridge_protocol_1.VAD_SAMPLE_RATE);
                     return;
                 }
@@ -325,6 +405,7 @@ class JitsiBrowserBot {
                     const msg = JSON.parse(str);
                     if (msg.type === "join_result") {
                         if (msg.success) {
+                            this.jitsiJoinedAt = this.jitsiJoinedAt || Date.now();
                             logging_1.logger.info({ event: "BOT_JITSI_JOINED" }, "Bot joined Jitsi conference");
                         }
                         else {
@@ -361,31 +442,52 @@ class JitsiBrowserBot {
                             nonZero: msg.nonZero,
                         }, "Bot page received debug audio frame");
                     }
+                    else if (msg.type === "remote_track_added") {
+                        logging_1.logger.info({
+                            event: "BOT_REMOTE_TRACK_ADDED",
+                            participantId: msg.participantId ?? "",
+                            track_readyState: msg.track_readyState,
+                            track_enabled: msg.track_enabled,
+                        }, "Bot attached remote participant audio to mixer (room audio in)");
+                    }
+                    else if (msg.type === "rx_audio_started") {
+                        logging_1.logger.info({ event: "BOT_RX_AUDIO_STARTED", rx_bytes: msg.rx_bytes ?? 0 }, "Room audio in: first bytes received from mixer (speak unmuted to get USER_TRANSCRIPT)");
+                    }
                     else if (msg.type === "stats" && msg.stats) {
                         this.lastStats = msg.stats;
-                        // Only warn on suspicious states to keep logs clean at LOG_LEVEL=warn.
                         const now = Date.now();
+                        const mixerMaxAbs = typeof msg.stats.mixer_max_abs === "number" ? msg.stats.mixer_max_abs : undefined;
+                        if (mixerMaxAbs !== undefined && now - this.lastMixerLevelLogAt >= 10_000) {
+                            this.lastMixerLevelLogAt = now;
+                            logging_1.logger.info({ event: "ROOM_MIXER_LEVEL", mixer_max_abs: mixerMaxAbs }, "Room mixer output level in browser (0 = remote track silent; ensure participant is unmuted)");
+                        }
+                        // Only warn on suspicious states; suppress during grace period and when outbound is clearly healthy.
+                        const STATS_GRACE_MS = 30_000;
+                        const HEALTHY_OUT_THRESHOLD = 50_000;
                         const confState = typeof msg.stats.conference_state === "string" ? msg.stats.conference_state : "";
                         const audioCtx = typeof msg.stats.audio_context_state === "string" ? msg.stats.audio_context_state : "";
                         const iceState = typeof msg.stats.ice_state === "string" ? msg.stats.ice_state : "";
+                        const pcState = typeof msg.stats.pc_connection_state === "string" ? msg.stats.pc_connection_state : "";
+                        const outAudioSent = typeof msg.stats.out_audio_bytes_sent === "number" ? msg.stats.out_audio_bytes_sent : 0;
                         const txBytesFromPage = typeof msg.stats.tx_bytes === "number" ? msg.stats.tx_bytes : 0;
                         const txRms = typeof msg.stats.tx_rms === "number" ? msg.stats.tx_rms : undefined;
                         const txFrameRms = typeof msg.stats.tx_frame_rms === "number" ? msg.stats.tx_frame_rms : undefined;
                         const txFrameMaxAbs = typeof msg.stats.tx_frame_max_abs === "number" ? msg.stats.tx_frame_max_abs : undefined;
                         const txFrameNonZero = typeof msg.stats.tx_frame_nonzero === "number" ? msg.stats.tx_frame_nonzero : undefined;
                         const txFrameXor = typeof msg.stats.tx_frame_xor === "number" ? msg.stats.tx_frame_xor : undefined;
-                        const shouldWarn = (confState && confState !== "joined") ||
+                        const inGracePeriod = this.jitsiJoinedAt > 0 && now - this.jitsiJoinedAt < STATS_GRACE_MS;
+                        const outboundHealthy = outAudioSent >= HEALTHY_OUT_THRESHOLD && pcState === "connected";
+                        const critical = (confState && confState !== "joined") ||
                             (audioCtx && audioCtx !== "running") ||
                             (iceState && (iceState === "failed" || iceState === "disconnected")) ||
-                            // If Node has pushed audio but the page hasn't received bytes, the bridge TX path is broken.
-                            (this.txBytesTotal > 0 && txBytesFromPage === 0) ||
-                            // If the page is receiving mic frames but the output RMS stays ~0, the synthetic mic graph is silent.
-                            (txBytesFromPage > 0 && txRms !== undefined && txRms <= 0.0001) ||
-                            // If incoming frames are silent, TTS audio is likely silent (or wrong format).
-                            (txBytesFromPage > 0 && txFrameRms !== undefined && txFrameRms <= 0.0001) ||
-                            (txBytesFromPage > 0 && txFrameMaxAbs !== undefined && txFrameMaxAbs === 0) ||
-                            (txBytesFromPage > 0 && txFrameNonZero !== undefined && txFrameNonZero === 0) ||
-                            (txBytesFromPage > 0 && txFrameXor !== undefined && txFrameXor === 0);
+                            (this.txBytesTotal > 0 && txBytesFromPage === 0);
+                        const silentPath = !outboundHealthy &&
+                            ((txBytesFromPage > 0 && txRms !== undefined && txRms <= 0.0001) ||
+                                (txBytesFromPage > 0 && txFrameRms !== undefined && txFrameRms <= 0.0001) ||
+                                (txBytesFromPage > 0 && txFrameMaxAbs !== undefined && txFrameMaxAbs === 0) ||
+                                (txBytesFromPage > 0 && txFrameNonZero !== undefined && txFrameNonZero === 0) ||
+                                (txBytesFromPage > 0 && txFrameXor !== undefined && txFrameXor === 0));
+                        const shouldWarn = !inGracePeriod && (critical || silentPath);
                         if (shouldWarn && now - this.lastBotStatsWarnAt > 60_000) {
                             this.lastBotStatsWarnAt = now;
                             logging_1.logger.warn({ event: "BOT_PAGE_STATS_WARN", stats: msg.stats }, "Bot page stats indicate potential audio/connectivity issue");
@@ -412,7 +514,11 @@ class JitsiBrowserBot {
                     // ignore non-JSON or parse errors
                 }
             });
-            ws.on("close", () => { this.ws = null; });
+            ws.on("close", (code, reason) => {
+                const reasonStr = reason && reason.length > 0 ? reason.toString("utf8") : undefined;
+                logging_1.logger.warn({ event: "BOT_BRIDGE_DISCONNECTED", code, reason: reasonStr }, "Bot bridge WebSocket closed — bot has left the call from the room's perspective; restart process to rejoin");
+                this.ws = null;
+            });
             // If TTS was produced before the bridge connected, flush it now.
             this.flushTxFrames();
             // Start paced sender: send exactly one 20ms frame per tick.
@@ -493,8 +599,12 @@ class JitsiBrowserBot {
             logging_1.logger.info({ event: "BOT_JOIN_SENT", domain: host, xmppDomain: this.config.xmppDomain, roomName: this.config.roomName }, "Sent join to bot page");
         });
         const playwright = await Promise.resolve().then(() => __importStar(require("playwright")));
+        const headed = process.env.BROWSER_HEADED === "true" || process.env.BROWSER_HEADED === "1";
+        if (headed) {
+            logging_1.logger.info({ event: "BROWSER_HEADED" }, "Launching Chromium in headed mode (requires DISPLAY, e.g. Xvfb); use for reliable remote audio in the mixer");
+        }
         this.browser = await playwright.chromium.launch({
-            headless: true,
+            headless: !headed,
             args: [
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-features=AudioServiceOutOfProcess",
@@ -508,6 +618,9 @@ class JitsiBrowserBot {
             ignoreHTTPSErrors: true,
         });
         this.page = await context.newPage();
+        this.page.on("close", () => {
+            logging_1.logger.warn({ event: "BOT_PAGE_CLOSED" }, "Bot page closed (browser tab/crash) — bot has left the call; restart process to rejoin");
+        });
         this.page.on("pageerror", (err) => {
             logging_1.logger.warn({ event: "BOT_PAGE_ERROR", name: err.name, message: err.message, stack: err.stack }, "Bot page JS error: " + err.message);
         });
@@ -527,8 +640,8 @@ class JitsiBrowserBot {
         });
         this.page.on("websocket", (ws) => {
             logging_1.logger.info({ event: "PW_WEBSOCKET_CREATED", url: ws.url() }, "Playwright: WebSocket created");
-            ws.on("framesent", (e) => logging_1.logger.debug({ event: "PW_WS_SENT", payload: e.payload }, "PW WS sent"));
-            ws.on("framereceived", (e) => logging_1.logger.debug({ event: "PW_WS_RECV", payload: e.payload }, "PW WS recv"));
+            ws.on("framesent", (e) => logging_1.logger.debug({ event: "PW_WS_SENT", ...summarizePayload(e.payload) }, "PW WS sent"));
+            ws.on("framereceived", (e) => logging_1.logger.debug({ event: "PW_WS_RECV", ...summarizePayload(e.payload) }, "PW WS recv"));
             ws.on("close", () => logging_1.logger.info({ event: "PW_WS_CLOSE" }, "Playwright: WebSocket closed"));
         });
         // If BOT_PAGE_URL is set, make it robust:

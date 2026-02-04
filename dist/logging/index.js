@@ -2,6 +2,10 @@
 /**
  * Structured logging for the AI co-host pipeline.
  * Logs ASR, LLM, TTS, turn events, and errors with timestamps. JSON output for shipping.
+ *
+ * Env:
+ *   LOG_LEVEL   - debug | info | warn | error (default: info)
+ *   LOG_FILE   - If set, append all logs to this path (creates dirs if needed). Use for debug runs when terminal scrollback is limited.
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -25,13 +29,26 @@ function createLogger(config = {}) {
         base: undefined,
         timestamp: pino_1.default.stdTimeFunctions.isoTime,
     };
-    if (config.pretty ?? defaultConfig.pretty) {
-        return (0, pino_1.default)({
-            ...opts,
-            transport: { target: "pino-pretty", options: { colorize: true } },
+    const pretty = config.pretty ?? defaultConfig.pretty;
+    const logFile = process.env.LOG_FILE?.trim();
+    const streams = [];
+    if (pretty) {
+        streams.push({
+            stream: pino_1.default.transport({ target: "pino-pretty", options: { colorize: true } }),
         });
     }
-    return (0, pino_1.default)(opts);
+    else {
+        streams.push({ stream: process.stdout });
+    }
+    if (logFile) {
+        streams.push({
+            stream: pino_1.default.destination({ dest: logFile, append: true, mkdir: true }),
+        });
+    }
+    if (streams.length === 1) {
+        return (0, pino_1.default)(opts, streams[0].stream);
+    }
+    return (0, pino_1.default)(opts, pino_1.default.multistream(streams));
 }
 exports.logger = createLogger();
 /** Log ASR result (avoid logging full transcript in production if PII). */

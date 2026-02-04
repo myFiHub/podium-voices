@@ -66,6 +66,10 @@ export interface AppConfig {
   pipeline: {
     /** Silence duration (ms) to consider end of turn */
     vadSilenceMs: number;
+    /** Energy-based VAD threshold (RMS of 16-bit samples); lower = more sensitive. Used when webrtcvad is unavailable. */
+    vadEnergyThreshold?: number;
+    /** WebRTC VAD aggressiveness 0–3 (0=least, 3=most). Only when webrtcvad native module is used. */
+    vadAggressiveness?: number;
     /** Max recent turns to keep in session memory */
     maxTurnsInMemory: number;
     /** Optional greeting spoken by the bot when it joins the room (starts the dialogue). Empty = no greeting. */
@@ -144,6 +148,18 @@ export function loadConfig(): AppConfig {
     },
     pipeline: {
       vadSilenceMs: parseInt(getEnv("VAD_SILENCE_MS") || "500", 10) || 500,
+      vadEnergyThreshold: (() => {
+        const v = getEnv("VAD_ENERGY_THRESHOLD");
+        if (v == null || v === "") return undefined;
+        const n = parseInt(v, 10);
+        return Number.isNaN(n) || n < 0 ? undefined : n;
+      })(),
+      vadAggressiveness: (() => {
+        const v = getEnv("VAD_AGGRESSIVENESS");
+        if (v == null || v === "") return undefined;
+        const n = parseInt(v, 10);
+        return Number.isNaN(n) || n < 0 || n > 3 ? undefined : n;
+      })(),
       maxTurnsInMemory: parseInt(getEnv("MAX_TURNS_IN_MEMORY") || "50", 10) || 50,
       /** GREETING_TEXT unset/empty = no greeting (use opener instead). */
       greetingText: getEnv("GREETING_TEXT") ?? "",

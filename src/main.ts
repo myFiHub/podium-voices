@@ -52,6 +52,8 @@ async function main(): Promise<void> {
 
   const orchestrator = new Orchestrator(asr, llm, tts, memory, {
     vadSilenceMs: config.pipeline.vadSilenceMs,
+    vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
+    vadAggressiveness: config.pipeline.vadAggressiveness,
     getFeedbackSentiment: () => feedbackCollector.getSentiment(),
   }, {
     onUserTranscript: (text) => logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),

@@ -10,8 +10,8 @@ const VAD_SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 2;
 const SAMPLES_PER_FRAME = (VAD_SAMPLE_RATE * VAD_FRAME_MS) / 1000;
 const FRAME_SIZE_BYTES = SAMPLES_PER_FRAME * BYTES_PER_SAMPLE;
-/** RMS threshold for energy-based fallback (16-bit PCM): below = silence. */
-const ENERGY_THRESHOLD = 500;
+/** Default RMS threshold for energy-based fallback (16-bit PCM): below = silence. */
+const DEFAULT_ENERGY_THRESHOLD = 500;
 function loadWebRtcVad(aggressiveness) {
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -29,7 +29,7 @@ function loadWebRtcVad(aggressiveness) {
     return null;
 }
 /** Simple energy-based VAD: RMS above threshold = speech. */
-function isVoiceEnergy(frame) {
+function isVoiceEnergy(frame, threshold) {
     if (frame.length < 2)
         return false;
     let sum = 0;
@@ -38,24 +38,26 @@ function isVoiceEnergy(frame) {
         sum += s * s;
     }
     const rms = Math.sqrt(sum / (frame.length / 2));
-    return rms > ENERGY_THRESHOLD;
+    return rms > threshold;
 }
 class VAD {
     vad = null;
     silenceFrames;
     aggressiveness;
+    energyThreshold;
     buffer = [];
     silenceCount = 0;
     hadSpeech = false;
     constructor(config) {
         this.silenceFrames = Math.ceil(config.silenceMs / VAD_FRAME_MS);
         this.aggressiveness = config.aggressiveness ?? 1;
+        this.energyThreshold = config.energyThreshold ?? DEFAULT_ENERGY_THRESHOLD;
         this.vad = loadWebRtcVad(this.aggressiveness);
     }
     isVoice(frame) {
         if (this.vad)
             return this.vad.isVoice(frame.slice(0, FRAME_SIZE_BYTES), VAD_SAMPLE_RATE);
-        return isVoiceEnergy(frame.slice(0, FRAME_SIZE_BYTES));
+        return isVoiceEnergy(frame.slice(0, FRAME_SIZE_BYTES), this.energyThreshold);
     }
     /**
      * Process one frame of audio (16kHz mono 16-bit, 20ms = 640 bytes).

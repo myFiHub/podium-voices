@@ -20,6 +20,8 @@
   let onRemotePcmFrame = null;
   let stats = {
     rx_bytes: 0,
+    /** Max absolute sample value in the last mixer frame sent to Node (0 = silence at browser). */
+    mixer_max_abs: 0,
     tx_bytes: 0,
     jitter_buffer_ms: 0,
     tx_rms: 0,
@@ -59,6 +61,8 @@
   let micSilenceSource = null;
   let pcStatsInterval = null;
   let lastOutboundBytesSent = 0;
+  /** Participant IDs we have already attached to the mixer (avoid duplicate streams). */
+  var remoteParticipantsAdded = {};
 
   // Capture uncaught errors/rejections with as much context as the browser provides.
   // Playwright's pageerror sometimes lacks stack traces; these hooks often include them.
@@ -429,13 +433,65 @@
     return micDestination.stream.getAudioTracks()[0];
   }
 
-  function addRemoteTrackToMixer(stream) {
+  /** Normalize participant ID for comparison (avoid type/whitespace mismatches). */
+  function isSameParticipant(id1, id2) {
+    return String(id1 || "").trim() === String(id2 || "").trim();
+  }
+
+  /**
+   * Get a MediaStream from a Jitsi remote track for use with createMediaStreamSource.
+   * Tries getStream(), getOriginalStream(), then new MediaStream([underlying track]).
+   */
+  function getStreamFromJitsiTrack(track) {
+    if (!track) return null;
+    var stream = null;
+    if (typeof track.getStream === "function") {
+      try { stream = track.getStream(); } catch (e) { /* ignore */ }
+    }
+    if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) {
+      if (typeof track.getOriginalStream === "function") {
+        try { stream = track.getOriginalStream(); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) {
+      var underlying = (typeof track.getTrack === "function" && track.getTrack()) || track.track;
+      if (underlying && underlying.kind === "audio") {
+        stream = new MediaStream([underlying]);
+      }
+    }
+    return stream && stream.getAudioTracks && stream.getAudioTracks().length ? stream : null;
+  }
+
+  function addRemoteTrackToMixer(streamOrTrack, participantIdForLog) {
+    var stream = null;
+    var underlyingTrack = null;
+    if (streamOrTrack && typeof streamOrTrack.getAudioTracks === "function" && streamOrTrack.getAudioTracks().length) {
+      stream = streamOrTrack;
+      underlyingTrack = stream.getAudioTracks()[0] || null;
+    } else {
+      stream = getStreamFromJitsiTrack(streamOrTrack);
+      if (stream) underlyingTrack = stream.getAudioTracks()[0] || null;
+    }
+    if (!stream || !underlyingTrack) {
+      console.warn("Bot: no stream or audio track for remote participant", participantIdForLog);
+      return;
+    }
+    if (underlyingTrack.readyState === "ended") {
+      console.warn("Bot: remote audio track already ended, skipping", participantIdForLog);
+      return;
+    }
+    if (participantIdForLog != null) {
+      var pid = String(participantIdForLog);
+      if (remoteParticipantsAdded[pid]) return;
+      remoteParticipantsAdded[pid] = true;
+    }
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: BRIDGE_SAMPLE_RATE });
     try {
       if (audioContext && audioContext.state === "suspended" && typeof audioContext.resume === "function") {
         audioContext.resume().catch(function () { /* ignore */ });
       }
     } catch (e) { /* ignore */ }
+    var rxAudioStartedSent = false;
     if (!mixerGain) {
       mixerGain = audioContext.createGain();
       mixerGain.gain.value = 1;
@@ -449,11 +505,20 @@
         while (mixerFloatBufferLength >= BRIDGE_SAMPLES_PER_FRAME) {
           const frameBuffer = new ArrayBuffer(BRIDGE_FRAME_BYTES);
           const frameView = new Int16Array(frameBuffer);
+          var frameMaxAbs = 0;
           for (let i = 0; i < BRIDGE_SAMPLES_PER_FRAME; i++) {
             const s = Math.max(-1, Math.min(1, mixerFloatBuffer[i]));
-            frameView[i] = s * 32767;
+            const sample = Math.round(s * 32767);
+            frameView[i] = sample;
+            var a = Math.abs(sample);
+            if (a > frameMaxAbs) frameMaxAbs = a;
           }
+          stats.mixer_max_abs = frameMaxAbs;
           stats.rx_bytes += frameBuffer.byteLength;
+          if (!rxAudioStartedSent) {
+            rxAudioStartedSent = true;
+            sendToNode({ type: "rx_audio_started", rx_bytes: stats.rx_bytes });
+          }
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(frameBuffer);
           if (onRemotePcmFrame) onRemotePcmFrame(new Uint8Array(frameBuffer));
           mixerFloatBuffer.copyWithin(0, BRIDGE_SAMPLES_PER_FRAME, mixerFloatBufferLength);
@@ -464,10 +529,60 @@
       mixerProcessor.connect(audioContext.destination);
     }
     try {
+      if (underlyingTrack.enabled === false) {
+        underlyingTrack.enabled = true;
+      }
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(mixerGain);
+      if (participantIdForLog != null) {
+        sendToNode({
+          type: "remote_track_added",
+          participantId: String(participantIdForLog),
+          track_readyState: underlyingTrack.readyState,
+          track_enabled: underlyingTrack.enabled
+        });
+      }
     } catch (err) {
       console.warn("Bot: could not connect remote track to mixer", err);
+    }
+  }
+
+  /** After join, attach any remote participants' audio tracks that are already present (e.g. human joined first). */
+  function attachExistingRemoteTracks() {
+    if (!room || typeof room.getParticipants !== "function") return;
+    var myId = localParticipantId != null ? localParticipantId : (room.myUserId && room.myUserId());
+    var participants;
+    try {
+      participants = room.getParticipants();
+    } catch (e) {
+      console.warn("Bot: getParticipants", e);
+      return;
+    }
+    if (!Array.isArray(participants)) return;
+    for (var i = 0; i < participants.length; i++) {
+      var p = participants[i];
+      if (!p || isSameParticipant(p.getId && p.getId(), myId)) continue;
+      var tracks = [];
+      try {
+        if (p.getTracksByMediaType) {
+          var mediaType = (window.JitsiMeetJS && window.JitsiMeetJS.events && window.JitsiMeetJS.events.media && window.JitsiMeetJS.events.media.AUDIO) || "audio";
+          tracks = p.getTracksByMediaType(mediaType) || [];
+        }
+        if (!Array.isArray(tracks) || tracks.length === 0) tracks = (p.getTracks && p.getTracks()) || [];
+      } catch (e) {
+        tracks = (p.getTracks && p.getTracks()) || [];
+      }
+      if (!Array.isArray(tracks)) continue;
+      for (var j = 0; j < tracks.length; j++) {
+        var track = tracks[j];
+        var type = (track.getType && track.getType()) || (track.kind || "");
+        if (type !== "audio") continue;
+        try {
+          addRemoteTrackToMixer(track, p.getId && p.getId());
+        } catch (err) {
+          console.warn("Bot: attachExistingRemoteTracks addRemoteTrackToMixer", err);
+        }
+      }
     }
   }
 
@@ -576,12 +691,12 @@
                   return;
                 }
                 if (trackType !== "audio") return;
-                if ((track.getParticipantId && track.getParticipantId()) === localParticipantId) return;
+                if (isSameParticipant(track.getParticipantId && track.getParticipantId(), localParticipantId)) return;
                 try {
-                  const stream = track.getOriginalStream();
-                  if (stream && stream.getAudioTracks().length) addRemoteTrackToMixer(stream);
+                  var pid = track.getParticipantId && track.getParticipantId();
+                  setTimeout(function () { addRemoteTrackToMixer(track, pid); }, 300);
                 } catch (e) {
-                  console.warn("Bot: TRACK_ADDED getOriginalStream", e);
+                  console.warn("Bot: TRACK_ADDED addRemoteTrackToMixer", e);
                 }
               });
               room.on(window.JitsiMeetJS.events.conference.CONFERENCE_JOINED, function () {
@@ -625,6 +740,8 @@
             sendToNode({ type: "join_result", success: true });
             // Start polling WebRTC stats so Node can confirm bytesSent is increasing.
             startPcStatsPoll();
+            // Attach any remote participants already in the room (e.g. human joined first). Delay so Jitsi has time to populate.
+            setTimeout(function () { attachExistingRemoteTracks(); }, 1200);
           }).catch(function (err) {
             var msg = (err && err.message) ? err.message : String(err);
             sendToNode({ type: "join_result", success: false, error: msg });

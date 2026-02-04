@@ -22,6 +22,7 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private lastRxTxAt;
     private statsInterval;
     private lastBotStatsWarnAt;
+    private jitsiJoinedAt;
     private lastStats;
     private loggedTxFrameSample;
     private txSeq;
@@ -30,8 +31,20 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private wavBuffers;
     private wavBytes;
     private wroteWav;
+    /** Ring buffer for room-audio level diagnostic: last 5s of 16k resampled PCM. */
+    private static readonly RX_LEVEL_RING_FRAMES;
+    private static readonly RX_LEVEL_FRAME_BYTES;
+    private rxLevelRing;
+    private rxLevelFrameCount;
+    private lastRoomAudioSilentWarnAt;
+    private lastMixerLevelLogAt;
     constructor(config: JitsiConfig);
     onIncomingAudio(callback: (buffer: Buffer, sampleRate: number) => void): void;
+    /**
+     * Accumulate resampled room audio and periodically log RMS/maxAbs so we can see if
+     * Node is receiving non-silent audio (if levels are ~0, VAD will never fire).
+     */
+    private updateRoomAudioLevel;
     private flushTxFrames;
     pushAudio(buffer: Buffer): void;
     /** True if browser and bridge are alive (for watchdog). */

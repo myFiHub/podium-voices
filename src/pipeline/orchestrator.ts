@@ -28,6 +28,10 @@ function withTimeout<T>(p: Promise<T>, timeoutMs: number, label: string): Promis
 
 export interface OrchestratorConfig {
   vadSilenceMs: number;
+  /** Energy-based VAD threshold (when webrtcvad unavailable); lower = more sensitive. */
+  vadEnergyThreshold?: number;
+  /** WebRTC VAD aggressiveness 0–3 (only when webrtcvad native module is used). */
+  vadAggressiveness?: number;
   /** Feedback sentiment for this turn (cheer | boo | neutral). */
   getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
   /** Prompt builder; defaults to PromptManager with CO_HOST_SYSTEM_PROMPT. */
@@ -45,6 +49,8 @@ export class Orchestrator {
   private speaking = false;
   private cancelTts = false;
   private pendingSegment: Buffer | null = null;
+  /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
+  private vadSpeechLogged = false;
   private readonly getFeedbackSentiment: () => "cheer" | "boo" | "neutral";
   private readonly promptManager: PromptManager;
   private readonly safety: SafetyGate;
@@ -60,7 +66,8 @@ export class Orchestrator {
   ) {
     this.vad = new VAD({
       silenceMs: config.vadSilenceMs,
-      aggressiveness: 1,
+      aggressiveness: config.vadAggressiveness ?? 1,
+      energyThreshold: config.vadEnergyThreshold,
     });
     this.getFeedbackSentiment = config.getFeedbackSentiment ?? (() => "neutral");
     this.promptManager = config.promptManager ?? new PromptManager();
@@ -85,13 +92,23 @@ export class Orchestrator {
       const frame = combined.subarray(offset, offset + frameSize);
       const result = this.vad.processFrame(frame);
       offset += frameSize;
+      if (result.isSpeech && !this.vadSpeechLogged) {
+        this.vadSpeechLogged = true;
+        logger.debug({ event: "VAD_SPEECH_STARTED" }, "VAD: first speech in run (audio level above threshold)");
+      }
       // Barge-in: if user speech is detected while bot is speaking, cancel TTS immediately.
       if (this.speaking && result.isSpeech && !this.cancelTts) {
         this.cancelTts = true;
         this.callbacks.onBargeIn?.({ reason: "user_speech" });
       }
       if (result.endOfTurn && result.segment && result.segment.length > 0) {
+        this.vadSpeechLogged = false;
         this.audioBuffer = combined.length > offset ? [combined.subarray(offset)] : [];
+        const segmentMs = Math.round((result.segment.length / frameSize) * 20);
+        logger.info(
+          { event: "VAD_END_OF_TURN", segmentBytes: result.segment.length, segmentMs, speaking: this.speaking },
+          "VAD: end of turn detected (pause after speech); will run ASR or queue"
+        );
         if (this.speaking) {
           // Queue the user's segment to respond after we finish (or cancel) the current utterance.
           this.pendingSegment = result.segment;

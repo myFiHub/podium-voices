@@ -52,6 +52,10 @@ export interface AppConfig {
     pipeline: {
         /** Silence duration (ms) to consider end of turn */
         vadSilenceMs: number;
+        /** Energy-based VAD threshold (RMS of 16-bit samples); lower = more sensitive. Used when webrtcvad is unavailable. */
+        vadEnergyThreshold?: number;
+        /** WebRTC VAD aggressiveness 0–3 (0=least, 3=most). Only when webrtcvad native module is used. */
+        vadAggressiveness?: number;
         /** Max recent turns to keep in session memory */
         maxTurnsInMemory: number;
         /** Optional greeting spoken by the bot when it joins the room (starts the dialogue). Empty = no greeting. */

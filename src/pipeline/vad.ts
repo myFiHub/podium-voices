@@ -9,14 +9,16 @@ const BYTES_PER_SAMPLE = 2;
 const SAMPLES_PER_FRAME = (VAD_SAMPLE_RATE * VAD_FRAME_MS) / 1000;
 const FRAME_SIZE_BYTES = SAMPLES_PER_FRAME * BYTES_PER_SAMPLE;
 
-/** RMS threshold for energy-based fallback (16-bit PCM): below = silence. */
-const ENERGY_THRESHOLD = 500;
+/** Default RMS threshold for energy-based fallback (16-bit PCM): below = silence. */
+const DEFAULT_ENERGY_THRESHOLD = 500;
 
 export interface VADConfig {
   /** Silence duration (ms) to consider end of turn. */
   silenceMs: number;
   /** Aggressiveness 0-3 (webrtcvad only; 0 = least aggressive, 3 = most). */
   aggressiveness?: number;
+  /** RMS threshold for energy-based VAD when webrtcvad is unavailable; lower = more sensitive. */
+  energyThreshold?: number;
 }
 
 export interface VADResult {
@@ -48,7 +50,7 @@ function loadWebRtcVad(aggressiveness: number): VadImpl | null {
 }
 
 /** Simple energy-based VAD: RMS above threshold = speech. */
-function isVoiceEnergy(frame: Buffer): boolean {
+function isVoiceEnergy(frame: Buffer, threshold: number): boolean {
   if (frame.length < 2) return false;
   let sum = 0;
   for (let i = 0; i < frame.length; i += 2) {
@@ -56,13 +58,14 @@ function isVoiceEnergy(frame: Buffer): boolean {
     sum += s * s;
   }
   const rms = Math.sqrt(sum / (frame.length / 2));
-  return rms > ENERGY_THRESHOLD;
+  return rms > threshold;
 }
 
 export class VAD {
   private vad: VadImpl | null = null;
   private readonly silenceFrames: number;
   private readonly aggressiveness: number;
+  private readonly energyThreshold: number;
   private buffer: Buffer[] = [];
   private silenceCount = 0;
   private hadSpeech = false;
@@ -70,12 +73,13 @@ export class VAD {
   constructor(config: VADConfig) {
     this.silenceFrames = Math.ceil(config.silenceMs / VAD_FRAME_MS);
     this.aggressiveness = config.aggressiveness ?? 1;
+    this.energyThreshold = config.energyThreshold ?? DEFAULT_ENERGY_THRESHOLD;
     this.vad = loadWebRtcVad(this.aggressiveness);
   }
 
   private isVoice(frame: Buffer): boolean {
     if (this.vad) return this.vad.isVoice(frame.slice(0, FRAME_SIZE_BYTES), VAD_SAMPLE_RATE);
-    return isVoiceEnergy(frame.slice(0, FRAME_SIZE_BYTES));
+    return isVoiceEnergy(frame.slice(0, FRAME_SIZE_BYTES), this.energyThreshold);
   }
 
   /**

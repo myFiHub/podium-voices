@@ -7,6 +7,8 @@ export interface VADConfig {
     silenceMs: number;
     /** Aggressiveness 0-3 (webrtcvad only; 0 = least aggressive, 3 = most). */
     aggressiveness?: number;
+    /** RMS threshold for energy-based VAD when webrtcvad is unavailable; lower = more sensitive. */
+    energyThreshold?: number;
 }
 export interface VADResult {
     /** True if speech detected in this frame. */
@@ -20,6 +22,7 @@ export declare class VAD {
     private vad;
     private readonly silenceFrames;
     private readonly aggressiveness;
+    private readonly energyThreshold;
     private buffer;
     private silenceCount;
     private hadSpeech;

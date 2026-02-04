@@ -106,6 +106,20 @@ function loadConfig() {
         },
         pipeline: {
             vadSilenceMs: parseInt(getEnv("VAD_SILENCE_MS") || "500", 10) || 500,
+            vadEnergyThreshold: (() => {
+                const v = getEnv("VAD_ENERGY_THRESHOLD");
+                if (v == null || v === "")
+                    return undefined;
+                const n = parseInt(v, 10);
+                return Number.isNaN(n) || n < 0 ? undefined : n;
+            })(),
+            vadAggressiveness: (() => {
+                const v = getEnv("VAD_AGGRESSIVENESS");
+                if (v == null || v === "")
+                    return undefined;
+                const n = parseInt(v, 10);
+                return Number.isNaN(n) || n < 0 || n > 3 ? undefined : n;
+            })(),
             maxTurnsInMemory: parseInt(getEnv("MAX_TURNS_IN_MEMORY") || "50", 10) || 50,
             /** GREETING_TEXT unset/empty = no greeting (use opener instead). */
             greetingText: getEnv("GREETING_TEXT") ?? "",

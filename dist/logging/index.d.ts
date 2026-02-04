@@ -1,6 +1,10 @@
 /**
  * Structured logging for the AI co-host pipeline.
  * Logs ASR, LLM, TTS, turn events, and errors with timestamps. JSON output for shipping.
+ *
+ * Env:
+ *   LOG_LEVEL   - debug | info | warn | error (default: info)
+ *   LOG_FILE   - If set, append all logs to this path (creates dirs if needed). Use for debug runs when terminal scrollback is limited.
  */
 import pino from "pino";
 export type LogLevel = "debug" | "info" | "warn" | "error";

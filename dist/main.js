@@ -47,6 +47,8 @@ async function main() {
     const ttsEnergyByUtterance = new Map();
     const orchestrator = new orchestrator_1.Orchestrator(asr, llm, tts, memory, {
         vadSilenceMs: config.pipeline.vadSilenceMs,
+        vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
+        vadAggressiveness: config.pipeline.vadAggressiveness,
         getFeedbackSentiment: () => feedbackCollector.getSentiment(),
     }, {
         onUserTranscript: (text) => logging_1.logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),

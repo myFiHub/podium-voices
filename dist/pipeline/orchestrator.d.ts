@@ -11,6 +11,10 @@ import { PromptManager } from "../prompts/prompt-manager";
 import { SafetyGate } from "./safety";
 export interface OrchestratorConfig {
     vadSilenceMs: number;
+    /** Energy-based VAD threshold (when webrtcvad unavailable); lower = more sensitive. */
+    vadEnergyThreshold?: number;
+    /** WebRTC VAD aggressiveness 0–3 (only when webrtcvad native module is used). */
+    vadAggressiveness?: number;
     /** Feedback sentiment for this turn (cheer | boo | neutral). */
     getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
     /** Prompt builder; defaults to PromptManager with CO_HOST_SYSTEM_PROMPT. */
@@ -36,6 +40,8 @@ export declare class Orchestrator {
     private speaking;
     private cancelTts;
     private pendingSegment;
+    /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
+    private vadSpeechLogged;
     private readonly getFeedbackSentiment;
     private readonly promptManager;
     private readonly safety;

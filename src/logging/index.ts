@@ -1,6 +1,10 @@
 /**
  * Structured logging for the AI co-host pipeline.
  * Logs ASR, LLM, TTS, turn events, and errors with timestamps. JSON output for shipping.
+ *
+ * Env:
+ *   LOG_LEVEL   - debug | info | warn | error (default: info)
+ *   LOG_FILE   - If set, append all logs to this path (creates dirs if needed). Use for debug runs when terminal scrollback is limited.
  */
 
 import pino from "pino";
@@ -23,13 +27,27 @@ export function createLogger(config: LoggerConfig = {}): pino.Logger {
     base: undefined,
     timestamp: pino.stdTimeFunctions.isoTime,
   };
-  if (config.pretty ?? defaultConfig.pretty) {
-    return pino({
-      ...opts,
-      transport: { target: "pino-pretty", options: { colorize: true } },
+  const pretty = config.pretty ?? defaultConfig.pretty;
+  const logFile = process.env.LOG_FILE?.trim();
+
+  const streams: pino.StreamEntry[] = [];
+  if (pretty) {
+    streams.push({
+      stream: pino.transport({ target: "pino-pretty", options: { colorize: true } }),
+    });
+  } else {
+    streams.push({ stream: process.stdout });
+  }
+  if (logFile) {
+    streams.push({
+      stream: pino.destination({ dest: logFile, append: true, mkdir: true }),
     });
   }
-  return pino(opts);
+
+  if (streams.length === 1) {
+    return pino(opts, streams[0].stream as pino.DestinationStream);
+  }
+  return pino(opts, pino.multistream(streams));
 }
 
 export const logger = createLogger();

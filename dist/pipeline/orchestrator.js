@@ -33,6 +33,8 @@ class Orchestrator {
     speaking = false;
     cancelTts = false;
     pendingSegment = null;
+    /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
+    vadSpeechLogged = false;
     getFeedbackSentiment;
     promptManager;
     safety;
@@ -46,7 +48,8 @@ class Orchestrator {
         this.callbacks = callbacks;
         this.vad = new vad_1.VAD({
             silenceMs: config.vadSilenceMs,
-            aggressiveness: 1,
+            aggressiveness: config.vadAggressiveness ?? 1,
+            energyThreshold: config.vadEnergyThreshold,
         });
         this.getFeedbackSentiment = config.getFeedbackSentiment ?? (() => "neutral");
         this.promptManager = config.promptManager ?? new prompt_manager_1.PromptManager();
@@ -71,13 +74,20 @@ class Orchestrator {
             const frame = combined.subarray(offset, offset + frameSize);
             const result = this.vad.processFrame(frame);
             offset += frameSize;
+            if (result.isSpeech && !this.vadSpeechLogged) {
+                this.vadSpeechLogged = true;
+                logging_1.logger.debug({ event: "VAD_SPEECH_STARTED" }, "VAD: first speech in run (audio level above threshold)");
+            }
             // Barge-in: if user speech is detected while bot is speaking, cancel TTS immediately.
             if (this.speaking && result.isSpeech && !this.cancelTts) {
                 this.cancelTts = true;
                 this.callbacks.onBargeIn?.({ reason: "user_speech" });
             }
             if (result.endOfTurn && result.segment && result.segment.length > 0) {
+                this.vadSpeechLogged = false;
                 this.audioBuffer = combined.length > offset ? [combined.subarray(offset)] : [];
+                const segmentMs = Math.round((result.segment.length / frameSize) * 20);
+                logging_1.logger.info({ event: "VAD_END_OF_TURN", segmentBytes: result.segment.length, segmentMs, speaking: this.speaking }, "VAD: end of turn detected (pause after speech); will run ASR or queue");
                 if (this.speaking) {
                     // Queue the user's segment to respond after we finish (or cancel) the current utterance.
                     this.pendingSegment = result.segment;
