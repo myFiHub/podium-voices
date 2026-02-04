@@ -43,6 +43,17 @@ export class SessionMemory implements ISessionMemory {
     this.runningSummary = undefined;
   }
 
+  /** Replace turns with an external list (e.g. from Turn Coordinator). Preserves maxTurns trim. */
+  replaceTurns(turns: Array<{ role: "user" | "assistant"; content: string }>): void {
+    const now = Date.now();
+    this.turns = turns
+      .filter((t) => t.role === "user" || t.role === "assistant")
+      .map((t) => ({ role: t.role as "user" | "assistant", content: t.content.trim(), timestamp: now }));
+    while (this.turns.length > this.maxTurns) {
+      this.turns.shift();
+    }
+  }
+
   /** Optional: set a running summary (e.g. from a background summarizer). */
   setRunningSummary(summary: string | undefined): void {
     this.runningSummary = summary;

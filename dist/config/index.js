@@ -150,6 +150,9 @@ function loadConfig() {
         agent: {
             personaId: getEnv("PERSONA_ID") || "default",
             feedbackReactToAddress: getEnv("FEEDBACK_REACT_TO_ADDRESS"),
+            agentId: getEnv("AGENT_ID"),
+            agentDisplayName: getEnv("AGENT_DISPLAY_NAME"),
+            coordinatorUrl: getEnv("COORDINATOR_URL"),
         },
     };
 }

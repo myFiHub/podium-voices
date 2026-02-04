@@ -15,6 +15,11 @@ export declare class SessionMemory implements ISessionMemory {
     append(role: "user" | "assistant", content: string): void;
     getSnapshot(): SessionMemorySnapshot;
     clear(): void;
+    /** Replace turns with an external list (e.g. from Turn Coordinator). Preserves maxTurns trim. */
+    replaceTurns(turns: Array<{
+        role: "user" | "assistant";
+        content: string;
+    }>): void;
     /** Optional: set a running summary (e.g. from a background summarizer). */
     setRunningSummary(summary: string | undefined): void;
 }

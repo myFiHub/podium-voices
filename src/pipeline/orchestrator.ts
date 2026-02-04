@@ -7,6 +7,7 @@ import type { IASR } from "../adapters/asr";
 import type { ILLM, Message } from "../adapters/llm";
 import type { ITTS } from "../adapters/tts";
 import type { ISessionMemory } from "../memory/types";
+import type { ICoordinatorClient } from "../coordinator/client";
 import type { PipelineCallbacks } from "./types";
 import { VAD } from "./vad";
 import { pcmToWav } from "./audio-utils";
@@ -42,6 +43,8 @@ export interface OrchestratorConfig {
   safetyGate?: SafetyGate;
   /** Timeouts for external calls. */
   timeouts?: { asrMs?: number; llmMs?: number };
+  /** Multi-agent: Turn Coordinator client. When set, agent syncs memory and requests turn before replying. */
+  coordinatorClient?: ICoordinatorClient;
 }
 
 export class Orchestrator {
@@ -58,6 +61,7 @@ export class Orchestrator {
   private readonly promptManager: PromptManager;
   private readonly safety: SafetyGate;
   private readonly timeouts: { asrMs: number; llmMs: number };
+  private readonly coordinatorClient?: ICoordinatorClient;
 
   constructor(
     private readonly asr: IASR,
@@ -80,6 +84,7 @@ export class Orchestrator {
       asrMs: config.timeouts?.asrMs ?? DEFAULT_ASR_TIMEOUT_MS,
       llmMs: config.timeouts?.llmMs ?? DEFAULT_LLM_TIMEOUT_MS,
     };
+    this.coordinatorClient = config.coordinatorClient;
   }
 
   /**
@@ -162,6 +167,20 @@ export class Orchestrator {
     if (!userSafe.allowed || userSafe.text.length === 0) return;
     this.callbacks.onUserTranscript?.(userSafe.text);
 
+    if (this.coordinatorClient) {
+      const turns = await this.coordinatorClient.syncRecentTurns();
+      const flatTurns: Array<{ role: "user" | "assistant"; content: string }> = [];
+      for (const t of turns) {
+        flatTurns.push({ role: "user", content: t.user });
+        flatTurns.push({ role: "assistant", content: t.assistant });
+      }
+      if (typeof this.memory.replaceTurns === "function") {
+        this.memory.replaceTurns(flatTurns);
+      }
+      const allowed = await this.coordinatorClient.requestTurn(userSafe.text);
+      if (!allowed) return;
+    }
+
     this.memory.append("user", userSafe.text);
     const snapshot = this.memory.getSnapshot();
     const feedbackSentiment = this.getFeedbackSentiment();
@@ -193,6 +212,10 @@ export class Orchestrator {
     if (!assistantSafe.allowed || !assistantSafe.text.trim()) return;
     this.memory.append("assistant", assistantSafe.text);
     this.callbacks.onAgentReply?.(assistantSafe.text);
+
+    if (this.coordinatorClient) {
+      await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
+    }
 
     // Allow receiving audio while speaking so barge-in can be detected.
     this.processing = false;

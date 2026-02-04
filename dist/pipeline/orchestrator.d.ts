@@ -6,6 +6,7 @@ import type { IASR } from "../adapters/asr";
 import type { ILLM } from "../adapters/llm";
 import type { ITTS } from "../adapters/tts";
 import type { ISessionMemory } from "../memory/types";
+import type { ICoordinatorClient } from "../coordinator/client";
 import type { PipelineCallbacks } from "./types";
 import { PromptManager } from "../prompts/prompt-manager";
 import { SafetyGate } from "./safety";
@@ -28,6 +29,8 @@ export interface OrchestratorConfig {
         asrMs?: number;
         llmMs?: number;
     };
+    /** Multi-agent: Turn Coordinator client. When set, agent syncs memory and requests turn before replying. */
+    coordinatorClient?: ICoordinatorClient;
 }
 export declare class Orchestrator {
     private readonly asr;
@@ -49,6 +52,7 @@ export declare class Orchestrator {
     private readonly promptManager;
     private readonly safety;
     private readonly timeouts;
+    private readonly coordinatorClient?;
     constructor(asr: IASR, llm: ILLM, tts: ITTS, memory: ISessionMemory, config: OrchestratorConfig, callbacks?: PipelineCallbacks);
     /**
      * Push raw audio (16kHz mono 16-bit PCM for VAD). Call repeatedly with chunks.

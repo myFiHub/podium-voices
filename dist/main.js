@@ -19,6 +19,7 @@ const speaking_controller_1 = require("./room/speaking-controller");
 const live_state_1 = require("./room/live-state");
 const prompt_manager_1 = require("./prompts/prompt-manager");
 const persona_1 = require("./prompts/persona");
+const client_2 = require("./coordinator/client");
 async function main() {
     const config = (0, config_1.loadConfig)();
     const validation = (0, config_1.validateConfig)(config);
@@ -45,6 +46,13 @@ async function main() {
         storytellerAddendum: persona.storytellerAddendum,
         feedbackContextBuilder: persona.feedbackContextBuilder,
     });
+    const coordinatorClient = config.agent.coordinatorUrl && config.agent.agentId
+        ? new client_2.CoordinatorClient({
+            baseUrl: config.agent.coordinatorUrl,
+            agentId: config.agent.agentId,
+            displayName: config.agent.agentDisplayName ?? config.agent.agentId,
+        })
+        : undefined;
     let ttsSink = () => { };
     let speakingController = null;
     let liveState = null;
@@ -60,6 +68,7 @@ async function main() {
         getFeedbackSentiment: () => feedbackCollector.getSentiment(),
         getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
         promptManager,
+        coordinatorClient,
     }, {
         onUserTranscript: (text) => logging_1.logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),
         onAgentReply: (text) => logging_1.logger.info({ event: "AGENT_REPLY", textLength: text.length }, "Agent replied"),

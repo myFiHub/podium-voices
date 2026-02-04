@@ -6,11 +6,13 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
+    "start:coordinator": "node dist/coordinator/index.js",
     "dev": "ts-node src/main.ts",
     "test": "jest",
     "test:unit": "jest --testPathPattern=unit",
     "test:integration": "jest --testPathPattern=integration",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "run-multi-agent": "node scripts/run-multi-agent.js"
   },
   "engines": {
     "node": ">=18"

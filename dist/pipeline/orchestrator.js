@@ -40,6 +40,7 @@ class Orchestrator {
     promptManager;
     safety;
     timeouts;
+    coordinatorClient;
     constructor(asr, llm, tts, memory, config, callbacks = {}) {
         this.asr = asr;
         this.llm = llm;
@@ -60,6 +61,7 @@ class Orchestrator {
             asrMs: config.timeouts?.asrMs ?? DEFAULT_ASR_TIMEOUT_MS,
             llmMs: config.timeouts?.llmMs ?? DEFAULT_LLM_TIMEOUT_MS,
         };
+        this.coordinatorClient = config.coordinatorClient;
     }
     /**
      * Push raw audio (16kHz mono 16-bit PCM for VAD). Call repeatedly with chunks.
@@ -139,6 +141,20 @@ class Orchestrator {
         if (!userSafe.allowed || userSafe.text.length === 0)
             return;
         this.callbacks.onUserTranscript?.(userSafe.text);
+        if (this.coordinatorClient) {
+            const turns = await this.coordinatorClient.syncRecentTurns();
+            const flatTurns = [];
+            for (const t of turns) {
+                flatTurns.push({ role: "user", content: t.user });
+                flatTurns.push({ role: "assistant", content: t.assistant });
+            }
+            if (typeof this.memory.replaceTurns === "function") {
+                this.memory.replaceTurns(flatTurns);
+            }
+            const allowed = await this.coordinatorClient.requestTurn(userSafe.text);
+            if (!allowed)
+                return;
+        }
         this.memory.append("user", userSafe.text);
         const snapshot = this.memory.getSnapshot();
         const feedbackSentiment = this.getFeedbackSentiment();
@@ -172,6 +188,9 @@ class Orchestrator {
             return;
         this.memory.append("assistant", assistantSafe.text);
         this.callbacks.onAgentReply?.(assistantSafe.text);
+        if (this.coordinatorClient) {
+            await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
+        }
         // Allow receiving audio while speaking so barge-in can be detected.
         this.processing = false;
         this.speaking = true;

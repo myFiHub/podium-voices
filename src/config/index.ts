@@ -97,6 +97,12 @@ export interface AppConfig {
      * - "0x...": count only reactions targeting that wallet address
      */
     feedbackReactToAddress?: string;
+    /** Multi-agent: unique id for this agent process (used by Turn Coordinator). */
+    agentId?: string;
+    /** Multi-agent: display name for name-addressing (e.g. "Alex", "Jamie"). */
+    agentDisplayName?: string;
+    /** Multi-agent: Turn Coordinator base URL. When set, agent uses coordinator for turn-taking. */
+    coordinatorUrl?: string;
   };
 }
 
@@ -200,6 +206,9 @@ export function loadConfig(): AppConfig {
     agent: {
       personaId: getEnv("PERSONA_ID") || "default",
       feedbackReactToAddress: getEnv("FEEDBACK_REACT_TO_ADDRESS"),
+      agentId: getEnv("AGENT_ID"),
+      agentDisplayName: getEnv("AGENT_DISPLAY_NAME"),
+      coordinatorUrl: getEnv("COORDINATOR_URL"),
     },
   };
 }

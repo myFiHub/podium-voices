@@ -69,10 +69,81 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
     - unset/empty = count all room reactions (room mood)
     - `self` = count only reactions targeting the bot’s wallet address
     - `0x...` = count only reactions targeting that wallet address
+- **Multi-agent (Phase 1)**: See [Multi-agent (Phase 1)](#multi-agent-phase-1) below for full setup.
 - **Audio debug**: `DEBUG_AUDIO_FRAMES=1` adds a small per-frame header on the Node→browser TTS stream and logs `frame_ack` acks from the browser so we can verify byte-level integrity. `SAVE_TTS_WAV=1` saves short WAV captures to `debug-audio/` for offline inspection.
 - **Bot diagnostics (optional)**: **`BOT_DIAG=1`** runs a ~20s capture, writes `./logs/diag/*_stats.jsonl`, prints a verdict (e.g. `OK`, `INBOUND_RTP_BUT_PREMIX_SILENT`), then exits. **Leave unset or remove from `.env.local` for normal operation**; use only when debugging “bot doesn’t hear me” or receive-path issues. `BOT_DIAG_DURATION_MS` (default 20000), `PRE_MIXER_PASS_THRESHOLD`, `ARTIFACT_RETENTION_N` tune the diagnostic; see `.env.example` and [docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md).
 
 See `.env.example` for all variables.
+
+### Multi-agent (Phase 1)
+
+Phase 1 lets **two or more AI agents** join the **same** Podium Outpost room with distinct personas and no overlapping speech. Each agent runs in its **own process** (one pipeline per agent). A separate **Turn Coordinator** process decides which agent may respond to each user utterance (round-robin or by name in the transcript) and stores shared conversation turns so all agents see the same recent dialogue.
+
+**You run three (or more) processes:** one coordinator, then one agent process per AI. The coordinator does **not** load `.env.local`; you set its env vars in the shell when you start it. Each agent process loads `.env.local` (or you override vars in the shell per terminal).
+
+---
+
+**What to add or change for each agent**
+
+Start from your existing single-agent `.env.local`. For multi-agent you **add** these for every agent (and **change** one if you want two distinct participants):
+
+| Add or change | Example | Purpose |
+|---------------|---------|--------|
+| **Add** `COORDINATOR_URL` | `http://localhost:3001` | Required so this process talks to the coordinator. |
+| **Add** `AGENT_ID` | `alex` or `jamie` | Unique id per agent (required when using coordinator). |
+| **Add** `AGENT_DISPLAY_NAME` | `Alex` or `Jamie` | Name-addressing (e.g. “Alex, what do you think?”). |
+| **Change** `PERSONA_ID` per agent | `default` vs `hype` | Different tone/style per agent (recommended). |
+| **Change** `PODIUM_TOKEN` per agent | Token 1 vs Token 2 | Use a **separate** Podium token per agent so they appear as two different participants in the room. |
+
+Keep **the same** for both agents: `PODIUM_OUTPOST_UUID` (same room), all ASR/LLM/TTS and Podium API/WS URLs, Jitsi settings, and pipeline options. Only coordinator-related vars and agent identity (and optionally token) differ per process.
+
+**Coordinator env (set in shell when starting; not in .env.local)**
+
+| Env | Example | Purpose |
+|-----|---------|--------|
+| `COORDINATOR_PORT` | `3001` | Port the coordinator HTTP server listens on. |
+| `COORDINATOR_AGENTS` | `alex:Alex,jamie:Jamie` | Optional: round-robin order and name-addressing. |
+
+---
+
+**How to run (two agents)**
+
+1. **Build once:** `npm run build`
+
+2. **Terminal 1 – Start the coordinator**  
+   The coordinator does not read `.env.local`; pass vars in the shell:
+   ```bash
+   COORDINATOR_PORT=3001 COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run start:coordinator
+   ```
+   Leave this running.
+
+3. **Terminal 2 – Agent 1 (e.g. Alex)**  
+   Your existing `.env.local` is loaded. Add coordinator and agent identity by overriding in the shell (or add them to `.env.local` and override only the second agent in the next step):
+   ```bash
+   COORDINATOR_URL=http://localhost:3001 AGENT_ID=alex AGENT_DISPLAY_NAME=Alex PERSONA_ID=default npm start
+   ```
+   This uses the `PODIUM_TOKEN` (and everything else) from `.env.local`.
+
+4. **Terminal 3 – Agent 2 (e.g. Jamie)**  
+   Same `.env.local`; override identity, persona, and **use a second Podium token** so this agent is a different participant:
+   ```bash
+   COORDINATOR_URL=http://localhost:3001 AGENT_ID=jamie AGENT_DISPLAY_NAME=Jamie PERSONA_ID=hype PODIUM_TOKEN=<your_second_podium_token> npm start
+   ```
+   Replace `<your_second_podium_token>` with the second account’s token. All other vars (outpost UUID, API keys, etc.) come from `.env.local`.
+
+**Optional launcher:** To start coordinator and all agents from one command:
+```bash
+COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run run-multi-agent
+```
+See [scripts/run-multi-agent.js](scripts/run-multi-agent.js). You still need a second `PODIUM_TOKEN` for the second agent (e.g. via a config file or env).
+
+**Behavior**
+
+- When a user speaks, every agent’s pipeline runs ASR and gets the transcript. Each agent asks the coordinator for permission to respond. The coordinator picks **one** agent (by name in the transcript if present, otherwise round-robin) and grants the turn; only that agent runs LLM + TTS. The others skip replying.
+- After the chosen agent replies, it calls `end-turn` so the coordinator clears the “current speaker” and appends the turn to shared history. The next user utterance can then be assigned to another agent.
+- **Single-agent mode:** Leave `COORDINATOR_URL` and `AGENT_ID` unset; run `npm start` as usual with one process.
+
+For a full checklist and optional per-agent `.env` files, see **[docs/MULTI_AGENT_PHASE1.md](docs/MULTI_AGENT_PHASE1.md)**.
 
 ### Response latency and tuning
 
@@ -150,8 +221,8 @@ npm run test:unit
 npm run test:integration
 ```
 
-- Unit tests cover adapters (stub/factory), memory, and prompts.
-- Integration test runs the orchestrator with a mock room (stub ASR/LLM/TTS).
+- Unit tests cover adapters (stub/factory), memory, prompts, and coordinator client.
+- Integration tests: orchestrator with mock room; Turn Coordinator HTTP API.
 
 ## Smoke test (staging / production)
 
@@ -189,6 +260,7 @@ docs/             – Smoke test runbook; muting and speaking-time spec (Nexus/P
 scripts/          – Smoke script (npm run smoke)
 src/
   config/         – Env-based config
+  coordinator/    – Turn Coordinator (multi-agent): HTTP service + client for turn-taking and shared turns
   adapters/       – ASR, LLM, TTS (openai, anthropic, google, azure, stub)
   memory/         – Session rolling buffer
   prompts/        – Co-host system prompt and feedback injection
@@ -197,7 +269,8 @@ src/
   feedback/       – Reaction collector (cheer/boo)
   metrics/        – Turn metrics (ASR/LLM/TTS latency), watchdogs (WS, conference, audio)
   logging/        – Structured logger
-  main.ts         – Entry point
+  main.ts         – Entry point (agent process)
+scripts/          – Smoke script; run-multi-agent (optional launcher for coordinator + N agents)
 tests/            – Unit and integration tests (Jest + ts-jest)
 ```
 

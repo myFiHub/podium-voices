@@ -25,4 +25,7 @@ export interface ISessionMemory {
 
   /** Clear all (e.g. new session). */
   clear(): void;
+
+  /** Replace in-memory turns with external list (e.g. from Turn Coordinator). Optional for multi-agent sync. */
+  replaceTurns?(turns: Array<{ role: "user" | "assistant"; content: string }>): void;
 }

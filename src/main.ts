@@ -18,6 +18,7 @@ import { SpeakingController } from "./room/speaking-controller";
 import { LiveState } from "./room/live-state";
 import { PromptManager } from "./prompts/prompt-manager";
 import { getPersona } from "./prompts/persona";
+import { CoordinatorClient } from "./coordinator/client";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -49,6 +50,15 @@ async function main(): Promise<void> {
     feedbackContextBuilder: persona.feedbackContextBuilder,
   });
 
+  const coordinatorClient =
+    config.agent.coordinatorUrl && config.agent.agentId
+      ? new CoordinatorClient({
+          baseUrl: config.agent.coordinatorUrl,
+          agentId: config.agent.agentId,
+          displayName: config.agent.agentDisplayName ?? config.agent.agentId,
+        })
+      : undefined;
+
   let ttsSink: (buffer: Buffer) => void = () => {};
   let speakingController: SpeakingController | null = null;
   let liveState: LiveState | null = null;
@@ -65,6 +75,7 @@ async function main(): Promise<void> {
     getFeedbackSentiment: () => feedbackCollector.getSentiment(),
     getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
     promptManager,
+    coordinatorClient,
   }, {
     onUserTranscript: (text) => logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),
     onAgentReply: (text) => logger.info({ event: "AGENT_REPLY", textLength: text.length }, "Agent replied"),

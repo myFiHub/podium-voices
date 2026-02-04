@@ -34,6 +34,16 @@ class SessionMemory {
         this.turns = [];
         this.runningSummary = undefined;
     }
+    /** Replace turns with an external list (e.g. from Turn Coordinator). Preserves maxTurns trim. */
+    replaceTurns(turns) {
+        const now = Date.now();
+        this.turns = turns
+            .filter((t) => t.role === "user" || t.role === "assistant")
+            .map((t) => ({ role: t.role, content: t.content.trim(), timestamp: now }));
+        while (this.turns.length > this.maxTurns) {
+            this.turns.shift();
+        }
+    }
     /** Optional: set a running summary (e.g. from a background summarizer). */
     setRunningSummary(summary) {
         this.runningSummary = summary;
