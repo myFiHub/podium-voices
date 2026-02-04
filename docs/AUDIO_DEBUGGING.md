@@ -2,6 +2,8 @@
 
 This repo uses a Playwright-controlled "bot page" (`bot-page/`) to join Jitsi and publish/subscribe audio. When something is "silent", you want to avoid guessing and instead **prove each boundary**.
 
+**Room audio in (receive):** The bot applies a Chrome workaround (hidden muted `<audio>` per remote track) so Chromium decodes remote WebRTC audio into the mixer. See [AUDIO_RECEIVE_STATUS_AND_RESEARCH.md](AUDIO_RECEIVE_STATUS_AND_RESEARCH.md) for the design and resolution.
+
 ## The boundaries (prove in order)
 
 - **B0 — TTS generation (Node)**: TTS adapter produces non-silent PCM.
@@ -36,9 +38,10 @@ Run with:
 LOG_LEVEL=info USE_JITSI_BOT=true DEBUG_AUDIO_FRAMES=1 SAVE_TTS_WAV=1 npm start
 ```
 
-- **`BOT_DIAG=1`** (deterministic verdict + artifacts):
+- **`BOT_DIAG=1`** (optional; deterministic verdict + artifacts):
   - Runs a ~20s capture of `TRUTH_PROBE` samples (every ~2s) and writes `./logs/diag/*_stats.jsonl`.
-  - Prints a final verdict and exits: `NO_INBOUND_RTP`, `INBOUND_RTP_BUT_PREMIX_SILENT`, `PREMIX_OK_BUT_MIXER_SILENT`, `MIXER_OK_BUT_NODE_SILENT`, `PUBLISH_BYTES_NOT_INCREASING`, or `OK`.
+  - Prints a final verdict and **exits** (the process does not keep running). Verdicts: `NO_INBOUND_RTP`, `INBOUND_RTP_BUT_PREMIX_SILENT`, `PREMIX_OK_BUT_MIXER_SILENT`, `MIXER_OK_BUT_NODE_SILENT`, `PUBLISH_BYTES_NOT_INCREASING`, or `OK`.
+  - **Omit or remove `BOT_DIAG` from `.env.local` for normal long-running use**; set it only when debugging receive/audio issues.
   - Recommended invocation:
 
 ```bash

@@ -17,6 +17,8 @@ const mock_1 = require("./room/mock");
 const client_1 = require("./room/client");
 const speaking_controller_1 = require("./room/speaking-controller");
 const live_state_1 = require("./room/live-state");
+const prompt_manager_1 = require("./prompts/prompt-manager");
+const persona_1 = require("./prompts/persona");
 async function main() {
     const config = (0, config_1.loadConfig)();
     const validation = (0, config_1.validateConfig)(config);
@@ -37,6 +39,12 @@ async function main() {
     const tts = (0, tts_1.createTTS)(config);
     const memory = new session_1.SessionMemory({ maxTurns: config.pipeline.maxTurnsInMemory });
     const feedbackCollector = new collector_1.FeedbackCollector({ windowMs: 60_000 });
+    const persona = (0, persona_1.getPersona)(config.agent.personaId);
+    const promptManager = new prompt_manager_1.PromptManager({
+        systemPrompt: persona.systemPrompt,
+        storytellerAddendum: persona.storytellerAddendum,
+        feedbackContextBuilder: persona.feedbackContextBuilder,
+    });
     let ttsSink = () => { };
     let speakingController = null;
     let liveState = null;
@@ -50,6 +58,8 @@ async function main() {
         vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
         vadAggressiveness: config.pipeline.vadAggressiveness,
         getFeedbackSentiment: () => feedbackCollector.getSentiment(),
+        getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
+        promptManager,
     }, {
         onUserTranscript: (text) => logging_1.logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),
         onAgentReply: (text) => logging_1.logger.info({ event: "AGENT_REPLY", textLength: text.length }, "Agent replied"),
@@ -112,6 +122,14 @@ async function main() {
         const joined = await room.join();
         roomRef = room;
         logging_1.logger.info("Joined Podium outpost room");
+        // Configure reaction filtering now that we know the bot's wallet address.
+        // FEEDBACK_REACT_TO_ADDRESS behavior:
+        // - unset: count all reactions (room mood)
+        // - "self": count only reactions targeting the bot
+        // - "0x...": count only reactions targeting that address
+        const rawReactTo = (config.agent.feedbackReactToAddress || "").trim();
+        const filterAddress = rawReactTo.toLowerCase() === "self" ? joined.user.address : rawReactTo.length > 0 ? rawReactTo : undefined;
+        feedbackCollector.setReactToUserAddressFilter(filterAddress);
         // Initialize live state (speaking-time rules) from REST snapshot + WS updates.
         liveState = new live_state_1.LiveState({
             selfAddress: joined.user.address,

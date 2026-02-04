@@ -2,7 +2,7 @@
  * Unit tests for co-host prompts.
  */
 
-import { buildFeedbackLine, memoryToMessages, CO_HOST_SYSTEM_PROMPT } from "../../../src/prompts/co-host";
+import { buildFeedbackContext, buildFeedbackLine, memoryToMessages, CO_HOST_SYSTEM_PROMPT } from "../../../src/prompts/co-host";
 import type { SessionMemorySnapshot } from "../../../src/memory/types";
 
 describe("buildFeedbackLine", () => {
@@ -14,6 +14,14 @@ describe("buildFeedbackLine", () => {
   });
   it("returns empty for neutral without lastMinute", () => {
     expect(buildFeedbackLine("neutral")).toBe("");
+  });
+});
+
+describe("buildFeedbackContext", () => {
+  it("returns stronger guidance for high_negative", () => {
+    const line = buildFeedbackContext({ sentiment: "boo", behaviorLevel: "high_negative", lastMinute: true });
+    expect(line).toContain("Strong negative");
+    expect(line).toContain("De-escalate");
   });
 });
 

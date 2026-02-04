@@ -71,6 +71,18 @@ export interface AppConfig {
         /** Optional topic seed override (env/config). */
         topicSeed?: string;
     };
+    /** Agent/persona behavior configuration */
+    agent: {
+        /** Which persona to run (maps to a persona registry). */
+        personaId: string;
+        /**
+         * Optional: filter which reactions are counted for feedback.
+         * - unset/empty: count ALL room reactions (room mood)
+         * - "self": count only reactions targeting the bot's wallet address (resolved after join)
+         * - "0x...": count only reactions targeting that wallet address
+         */
+        feedbackReactToAddress?: string;
+    };
 }
 /**
  * Build config from environment variables.

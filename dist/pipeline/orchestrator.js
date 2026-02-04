@@ -36,6 +36,7 @@ class Orchestrator {
     /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
     vadSpeechLogged = false;
     getFeedbackSentiment;
+    getFeedbackBehaviorLevel;
     promptManager;
     safety;
     timeouts;
@@ -52,6 +53,7 @@ class Orchestrator {
             energyThreshold: config.vadEnergyThreshold,
         });
         this.getFeedbackSentiment = config.getFeedbackSentiment ?? (() => "neutral");
+        this.getFeedbackBehaviorLevel = config.getFeedbackBehaviorLevel ?? (() => "neutral");
         this.promptManager = config.promptManager ?? new prompt_manager_1.PromptManager();
         this.safety = config.safetyGate ?? new safety_1.SafetyGate();
         this.timeouts = {
@@ -140,10 +142,12 @@ class Orchestrator {
         this.memory.append("user", userSafe.text);
         const snapshot = this.memory.getSnapshot();
         const feedbackSentiment = this.getFeedbackSentiment();
+        const feedbackBehaviorLevel = this.getFeedbackBehaviorLevel();
         const messages = this.promptManager.buildMessages({
             mode: "reply",
             snapshot,
             sentiment: feedbackSentiment,
+            behaviorLevel: feedbackBehaviorLevel,
         });
         const llmStart = Date.now();
         let fullText = "";
@@ -217,10 +221,12 @@ class Orchestrator {
     async speakOpener(args) {
         const snapshot = this.memory.getSnapshot();
         const feedbackSentiment = this.getFeedbackSentiment();
+        const feedbackBehaviorLevel = this.getFeedbackBehaviorLevel();
         const messages = this.promptManager.buildMessages({
             mode: "opener",
             snapshot,
             sentiment: feedbackSentiment,
+            behaviorLevel: feedbackBehaviorLevel,
             topicSeed: args.topicSeed,
             outpostContext: args.outpostContext,
         });

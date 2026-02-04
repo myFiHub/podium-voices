@@ -20,6 +20,7 @@ const stubConfig: AppConfig = {
   tts: { provider: "stub" },
   podium: { apiUrl: "", wsAddress: "", outpostServer: "" },
   pipeline: { vadSilenceMs: 500, maxTurnsInMemory: 50 },
+  agent: { personaId: "default" },
 };
 
 describe("Orchestrator + MockRoom integration", () => {

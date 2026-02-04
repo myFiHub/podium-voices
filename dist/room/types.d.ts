@@ -68,6 +68,11 @@ export declare const WS_INCOMING_NAMES: {
     readonly USER_LEFT: "user.left";
     readonly USER_STARTED_SPEAKING: "user.started_speaking";
     readonly USER_STOPPED_SPEAKING: "user.stopped_speaking";
+    /** Podium reactions (one message per reaction; nexus-compatible). */
+    readonly USER_LIKED: "user.liked";
+    readonly USER_DISLIKED: "user.disliked";
+    readonly USER_BOOED: "user.booed";
+    readonly USER_CHEERED: "user.cheered";
     readonly REMAINING_TIME_UPDATED: "remaining_time.updated";
     readonly USER_TIME_IS_UP: "user.time_is_up";
     readonly CREATOR_JOINED: "creator.joined";

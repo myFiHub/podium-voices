@@ -147,6 +147,10 @@ function loadConfig() {
             })(),
             topicSeed: getEnv("TOPIC_SEED"),
         },
+        agent: {
+            personaId: getEnv("PERSONA_ID") || "default",
+            feedbackReactToAddress: getEnv("FEEDBACK_REACT_TO_ADDRESS"),
+        },
     };
 }
 /**

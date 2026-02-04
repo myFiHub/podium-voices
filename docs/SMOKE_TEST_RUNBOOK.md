@@ -21,6 +21,21 @@ Repeatable staging and smoke tests for the AI co-host with browser bot (real Jit
    - `AGENT_REPLY` with non-zero text length
 5. Verify the human hears the bot’s TTS in the room.
 
+### 1.1 Reaction events smoke (cheer/boo/like/dislike)
+
+Purpose: validate “in-room stimuli” integration (Podium reaction WS events → feedback register → prompt/tone).
+
+1. Ensure the bot is running in a real outpost (`USE_JITSI_BOT=true`) and you can hear it reply normally.
+2. From the Podium UI, send one of the reactions:
+   - **Like** / **Dislike**
+   - **Cheer** / **Boo**
+   - (WS detail) These arrive as `user.liked` / `user.disliked` / `user.cheered` / `user.booed` with `data.react_to_user_address` as the target.
+3. After the reaction, speak a short line to trigger another bot response.
+4. Expected behavior:
+   - On positive reactions (like/cheer), the next bot reply should trend **more upbeat / affirming**.
+   - On negative reactions (dislike/boo), the next bot reply should **de-escalate** (shorter, clarifying, change topic, or ask a question).
+5. Optional: set `FEEDBACK_REACT_TO_ADDRESS=self` to count **only reactions targeting the bot**, rather than overall room mood.
+
 **If you don’t hear TTS, immediately check WebRTC “publish proof”:**
 
 - Look for periodic bot-page stats logs (e.g. `BOT_PAGE_STATS_WARN`).

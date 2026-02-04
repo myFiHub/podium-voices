@@ -7,7 +7,8 @@ Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins as a h
 - **Pipeline**: Audio → VAD → ASR → Session Memory + Feedback → LLM → TTS → Audio out.
 - **Room**: Podium REST API + WebSocket + **Jitsi** (browser bot or stub) or **mock** for local testing.
 - **Jitsi (production)**: When `USE_JITSI_BOT=true`, a Playwright-controlled browser loads a minimal **bot join page** (`bot-page/`), joins the same Jitsi conference as the Podium web client, mixes remote audio (excluding self), and injects TTS as a synthetic mic. Node↔browser audio uses **48 kHz mono 20 ms frames**; Node resamples to 16 kHz only at the ASR boundary.
-- **Feedback**: WebSocket reactions (LIKE, DISLIKE, BOO, CHEER) and live data are aggregated and injected into the LLM context.
+- **Room audio in (receive)**: Chromium does not feed decoded remote WebRTC audio into Web Audio unless the stream is also consumed by a media element. The bot applies a **Chrome workaround** (hidden muted `<audio>` element per remote track) so the mixer receives real PCM; see [docs/AUDIO_RECEIVE_STATUS_AND_RESEARCH.md](docs/AUDIO_RECEIVE_STATUS_AND_RESEARCH.md).
+- **Feedback**: Podium WebSocket reactions (incoming events: `user.liked`, `user.disliked`, `user.booed`, `user.cheered`) are aggregated into a short-lived “reaction register” (counts, and optional `amount` sums) and injected into the LLM context. A threshold-derived **behavior level** drives tone/style guidance (negative-biased so de-escalation wins when mixed), and can be tuned per persona.
 - **Observability**: Turn metrics (ASR/LLM/TTS latency, end-of-speech-to-bot-audio), watchdogs (WS, conference, audio), and structured logging.
 
 See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost%20Rooms.md), [Checklist and Setup Guide for AI Co-Host.md](Checklist%20and%20Setup%20Guide%20for%20AI%20Co-Host.md), and [podium interface considerations.md](podium%20interface%20considerations.md) for design and Podium interface details. **[IMPLEMENTATION.md](IMPLEMENTATION.md)** documents the actual implementation: architecture, core abstractions, pipeline behavior, host join flow, browser bot, audio bridge protocol, config, and how to extend or swap components. **[docs/AGENT_MUTING_AND_SPEAKING_TIME.md](docs/AGENT_MUTING_AND_SPEAKING_TIME.md)** describes what the agent needs for Podium muting/unmuting (start_speaking / stop_speaking) and speaking time (remaining_time, user.time_is_up), aligned with the Nexus frontend; it includes an implementation-status section for this repo.
@@ -28,7 +29,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
    - **TTS**: `Google_Cloud_TTS_API_KEY` (or Azure TTS vars if using Azure).
    - **Podium** (optional for mock): `NEXT_PUBLIC_PODIUM_API_URL`, `NEXT_PUBLIC_WEBSOCKET_ADDRESS`, `NEXT_PUBLIC_OUTPOST_SERVER`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`.
    - **Browser bot** (optional): `USE_JITSI_BOT=true` for real Jitsi audio. Optional `BOT_PAGE_URL` only if you host the bot page elsewhere (otherwise Node serves `bot-page/` on the bridge port). Optional `JITSI_BRIDGE_PORT` to pick the starting port (defaults to 8766; will retry multiple ports and can fall back to an ephemeral port).
-   - **Audio debug (optional)**: `DEBUG_AUDIO_FRAMES=1` enables per-frame integrity checks across the Node↔browser bridge. `SAVE_TTS_WAV=1` captures short WAVs for inspecting the TTS audio at different pipeline boundaries (saved under `debug-audio/`).
+   - **Audio debug (optional)**: `DEBUG_AUDIO_FRAMES=1` enables per-frame integrity checks across the Node↔browser bridge. `SAVE_TTS_WAV=1` captures short WAVs for inspecting the TTS audio at different pipeline boundaries (saved under `debug-audio/`). **`BOT_DIAG=1`** runs a 20s diagnostic capture, writes `./logs/diag/*_stats.jsonl`, prints a verdict, then exits—use only when debugging receive/audio issues; **omit or remove it for normal long-running use** (see [Response latency and tuning](#response-latency-and-tuning) and [docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md)).
    - **Opener / greeting** (optional): If `GREETING_TEXT` is non-empty, the bot will speak it after `GREETING_DELAY_MS`. Otherwise, if `OPENER_ENABLED=true`, the bot will generate a short storyteller-style opener (LLM) after `OPENER_DELAY_MS` (guided by `TOPIC_SEED` and outpost metadata).
 
    The agent must be **creator or cohost** of the outpost (see [podium interface considerations.md](podium%20interface%20considerations.md)). For real audio in/out, set `USE_JITSI_BOT=true` and ensure Playwright Chromium is installed (`npx playwright install chromium`).
@@ -62,9 +63,29 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 - **TTS_PROVIDER**: `google`, `azure`, or `stub`.
 - **Pipeline**: `VAD_SILENCE_MS`, `MAX_TURNS_IN_MEMORY`; `GREETING_TEXT`, `GREETING_DELAY_MS`; `OPENER_ENABLED`, `OPENER_DELAY_MS`, `OPENER_MAX_TOKENS`, `TOPIC_SEED`.
 - **Podium**: `NEXT_PUBLIC_*`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`; **USE_JITSI_BOT** (`true` = browser bot for real Jitsi audio); **BOT_PAGE_URL** (optional; default = Node serves `bot-page/` on the bridge port, starting at 8766).
+- **Agent / persona / feedback**:
+  - **`PERSONA_ID`**: `default` | `hype` | `calm` (system prompt + feedback thresholds + optional feedback wording).
+  - **`FEEDBACK_REACT_TO_ADDRESS`**: filter which reactions are counted:
+    - unset/empty = count all room reactions (room mood)
+    - `self` = count only reactions targeting the bot’s wallet address
+    - `0x...` = count only reactions targeting that wallet address
 - **Audio debug**: `DEBUG_AUDIO_FRAMES=1` adds a small per-frame header on the Node→browser TTS stream and logs `frame_ack` acks from the browser so we can verify byte-level integrity. `SAVE_TTS_WAV=1` saves short WAV captures to `debug-audio/` for offline inspection.
+- **Bot diagnostics (optional)**: **`BOT_DIAG=1`** runs a ~20s capture, writes `./logs/diag/*_stats.jsonl`, prints a verdict (e.g. `OK`, `INBOUND_RTP_BUT_PREMIX_SILENT`), then exits. **Leave unset or remove from `.env.local` for normal operation**; use only when debugging “bot doesn’t hear me” or receive-path issues. `BOT_DIAG_DURATION_MS` (default 20000), `PRE_MIXER_PASS_THRESHOLD`, `ARTIFACT_RETENTION_N` tune the diagnostic; see `.env.example` and [docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md).
 
 See `.env.example` for all variables.
+
+### Response latency and tuning
+
+End-to-end delay (user stops speaking → bot starts speaking) is dominated by ASR and LLM. You can tune **env only** (no code changes) as follows:
+
+| Env | Purpose | Effect on speed |
+|-----|---------|-----------------|
+| **VAD_SILENCE_MS** | Silence duration (ms) after speech to trigger “end of turn”. Default 500. | Lower (e.g. 300–400) = less wait before ASR runs; too low may cut off slow speakers. |
+| **OPENAI_MODEL_NAME** | Chat model for LLM (e.g. `gpt-4o-mini`, `gpt-4o`). Must be a **chat** model for `/v1/chat/completions`. | Smaller/faster model (e.g. `gpt-4o-mini`) = lower LLM latency. |
+| **VAD_ENERGY_THRESHOLD** | Optional; energy-based VAD when webrtcvad unavailable. Default 500. | Lower = more sensitive to quiet mics; may detect speech earlier. |
+| **VAD_AGGRESSIVENESS** | Optional; 0–3, only if webrtcvad native module is used. Default 1. | Lower (0) = more sensitive; may end turn sooner. |
+
+Further latency improvements (e.g. streaming ASR, different APIs) require code changes; see [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ### External configuration (Podium + Jitsi)
 

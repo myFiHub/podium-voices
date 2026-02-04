@@ -85,6 +85,19 @@ export interface AppConfig {
     /** Optional topic seed override (env/config). */
     topicSeed?: string;
   };
+
+  /** Agent/persona behavior configuration */
+  agent: {
+    /** Which persona to run (maps to a persona registry). */
+    personaId: string;
+    /**
+     * Optional: filter which reactions are counted for feedback.
+     * - unset/empty: count ALL room reactions (room mood)
+     * - "self": count only reactions targeting the bot's wallet address (resolved after join)
+     * - "0x...": count only reactions targeting that wallet address
+     */
+    feedbackReactToAddress?: string;
+  };
 }
 
 function getEnv(key: string, defaultValue?: string): string | undefined {
@@ -183,6 +196,10 @@ export function loadConfig(): AppConfig {
         return Number.isNaN(n) || n <= 0 ? 180 : n;
       })(),
       topicSeed: getEnv("TOPIC_SEED"),
+    },
+    agent: {
+      personaId: getEnv("PERSONA_ID") || "default",
+      feedbackReactToAddress: getEnv("FEEDBACK_REACT_TO_ADDRESS"),
     },
   };
 }

@@ -34,6 +34,8 @@ export interface OrchestratorConfig {
   vadAggressiveness?: number;
   /** Feedback sentiment for this turn (cheer | boo | neutral). */
   getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
+  /** Threshold-derived feedback behavior level for this turn (high_positive..high_negative). */
+  getFeedbackBehaviorLevel?: () => "high_positive" | "positive" | "neutral" | "negative" | "high_negative";
   /** Prompt builder; defaults to PromptManager with CO_HOST_SYSTEM_PROMPT. */
   promptManager?: PromptManager;
   /** Safety guardrails; defaults to SafetyGate. */
@@ -52,6 +54,7 @@ export class Orchestrator {
   /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
   private vadSpeechLogged = false;
   private readonly getFeedbackSentiment: () => "cheer" | "boo" | "neutral";
+  private readonly getFeedbackBehaviorLevel: () => "high_positive" | "positive" | "neutral" | "negative" | "high_negative";
   private readonly promptManager: PromptManager;
   private readonly safety: SafetyGate;
   private readonly timeouts: { asrMs: number; llmMs: number };
@@ -70,6 +73,7 @@ export class Orchestrator {
       energyThreshold: config.vadEnergyThreshold,
     });
     this.getFeedbackSentiment = config.getFeedbackSentiment ?? (() => "neutral");
+    this.getFeedbackBehaviorLevel = config.getFeedbackBehaviorLevel ?? (() => "neutral");
     this.promptManager = config.promptManager ?? new PromptManager();
     this.safety = config.safetyGate ?? new SafetyGate();
     this.timeouts = {
@@ -161,10 +165,12 @@ export class Orchestrator {
     this.memory.append("user", userSafe.text);
     const snapshot = this.memory.getSnapshot();
     const feedbackSentiment = this.getFeedbackSentiment();
+    const feedbackBehaviorLevel = this.getFeedbackBehaviorLevel();
     const messages: Message[] = this.promptManager.buildMessages({
       mode: "reply",
       snapshot,
       sentiment: feedbackSentiment,
+      behaviorLevel: feedbackBehaviorLevel,
     });
 
     const llmStart = Date.now();
@@ -234,10 +240,12 @@ export class Orchestrator {
   async speakOpener(args: { topicSeed?: string; outpostContext?: string; maxTokens?: number }): Promise<void> {
     const snapshot = this.memory.getSnapshot();
     const feedbackSentiment = this.getFeedbackSentiment();
+    const feedbackBehaviorLevel = this.getFeedbackBehaviorLevel();
     const messages: Message[] = this.promptManager.buildMessages({
       mode: "opener",
       snapshot,
       sentiment: feedbackSentiment,
+      behaviorLevel: feedbackBehaviorLevel,
       topicSeed: args.topicSeed,
       outpostContext: args.outpostContext,
     });

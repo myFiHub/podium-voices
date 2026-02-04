@@ -76,6 +76,11 @@ export const WS_INCOMING_NAMES = {
   USER_LEFT: "user.left",
   USER_STARTED_SPEAKING: "user.started_speaking",
   USER_STOPPED_SPEAKING: "user.stopped_speaking",
+  /** Podium reactions (one message per reaction; nexus-compatible). */
+  USER_LIKED: "user.liked",
+  USER_DISLIKED: "user.disliked",
+  USER_BOOED: "user.booed",
+  USER_CHEERED: "user.cheered",
   REMAINING_TIME_UPDATED: "remaining_time.updated",
   USER_TIME_IS_UP: "user.time_is_up",
   CREATOR_JOINED: "creator.joined",

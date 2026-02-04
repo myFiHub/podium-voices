@@ -17,6 +17,8 @@ export interface OrchestratorConfig {
     vadAggressiveness?: number;
     /** Feedback sentiment for this turn (cheer | boo | neutral). */
     getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
+    /** Threshold-derived feedback behavior level for this turn (high_positive..high_negative). */
+    getFeedbackBehaviorLevel?: () => "high_positive" | "positive" | "neutral" | "negative" | "high_negative";
     /** Prompt builder; defaults to PromptManager with CO_HOST_SYSTEM_PROMPT. */
     promptManager?: PromptManager;
     /** Safety guardrails; defaults to SafetyGate. */
@@ -43,6 +45,7 @@ export declare class Orchestrator {
     /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
     private vadSpeechLogged;
     private readonly getFeedbackSentiment;
+    private readonly getFeedbackBehaviorLevel;
     private readonly promptManager;
     private readonly safety;
     private readonly timeouts;

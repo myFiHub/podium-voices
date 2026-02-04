@@ -21,6 +21,7 @@ describe("createLLM", () => {
       tts: { provider: "stub" },
       podium: { apiUrl: "", wsAddress: "", outpostServer: "" },
       pipeline: { vadSilenceMs: 500, maxTurnsInMemory: 50 },
+      agent: { personaId: "default" },
     };
     const llm = createLLM(config);
     expect(llm).toBeInstanceOf(StubLLM);

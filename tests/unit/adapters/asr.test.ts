@@ -21,6 +21,7 @@ describe("createASR", () => {
       tts: { provider: "stub" },
       podium: { apiUrl: "", wsAddress: "", outpostServer: "" },
       pipeline: { vadSilenceMs: 500, maxTurnsInMemory: 50 },
+      agent: { personaId: "default" },
     };
     const asr = createASR(config);
     expect(asr).toBeInstanceOf(StubASR);
@@ -33,6 +34,7 @@ describe("createASR", () => {
       tts: { provider: "stub" },
       podium: { apiUrl: "", wsAddress: "", outpostServer: "" },
       pipeline: { vadSilenceMs: 500, maxTurnsInMemory: 50 },
+      agent: { personaId: "default" },
     };
     const asr = createASR(config);
     expect(asr).toBeInstanceOf(StubASR);

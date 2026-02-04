@@ -6,6 +6,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CO_HOST_SYSTEM_PROMPT = void 0;
 exports.buildFeedbackLine = buildFeedbackLine;
+exports.buildFeedbackContext = buildFeedbackContext;
 exports.memoryToMessages = memoryToMessages;
 exports.CO_HOST_SYSTEM_PROMPT = `You are "PodiumAI", an AI co-host in a live audio room.
 Your role is to assist and banter with the main human host and engage the audience.
@@ -24,6 +25,27 @@ function buildFeedbackLine(sentiment, lastMinute) {
     if (sentiment === "boo")
         return "Audience feedback: The audience booed or reacted negatively. Adjust tone or change topic.";
     return lastMinute ? "Audience feedback: Neutral in the last minute." : "";
+}
+/**
+ * Build richer feedback context using a derived behavior level (threshold-driven).
+ * Keep this as a single short line so it behaves well as an LLM prompt hint.
+ */
+function buildFeedbackContext(args) {
+    const level = args.behaviorLevel ?? "neutral";
+    if (level === "high_positive") {
+        return "Audience feedback: The room is very enthusiastic (many cheers/likes). Match the energy and lean into what’s working.";
+    }
+    if (level === "positive") {
+        return "Audience feedback: The room seems positive. Keep the vibe upbeat and invite more participation.";
+    }
+    if (level === "high_negative") {
+        return "Audience feedback: Strong negative reactions (boos/dislikes). De-escalate: shorten replies, change topic, or ask a question to reset.";
+    }
+    if (level === "negative") {
+        return "Audience feedback: Some negative reactions. Adjust tone, clarify, and consider changing approach or topic.";
+    }
+    // Default: fall back to sentiment-only line so existing behavior stays stable.
+    return buildFeedbackLine(args.sentiment, args.lastMinute);
 }
 /**
  * Format recent memory snapshot into messages for the LLM (excluding system).

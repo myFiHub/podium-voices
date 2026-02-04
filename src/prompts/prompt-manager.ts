@@ -1,20 +1,30 @@
 import type { Message } from "../adapters/llm";
 import type { SessionMemorySnapshot } from "../memory/types";
-import { CO_HOST_SYSTEM_PROMPT, buildFeedbackLine, memoryToMessages } from "./co-host";
+import type { FeedbackBehaviorLevel, FeedbackSentiment } from "../feedback/types";
+import { CO_HOST_SYSTEM_PROMPT, buildFeedbackContext, memoryToMessages } from "./co-host";
 
 export type PromptMode = "opener" | "reply";
+
+export type FeedbackContextBuilder = (args: {
+  sentiment: FeedbackSentiment;
+  behaviorLevel?: FeedbackBehaviorLevel;
+  lastMinute?: boolean;
+}) => string;
 
 export interface PromptManagerConfig {
   /** Base system prompt/persona. Defaults to CO_HOST_SYSTEM_PROMPT. */
   systemPrompt?: string;
   /** Optional additional persona/style for a storyteller vibe. */
   storytellerAddendum?: string;
+  /** Optional: override how feedback context is injected into the prompt. */
+  feedbackContextBuilder?: FeedbackContextBuilder;
 }
 
 export interface BuildPromptArgs {
   mode: PromptMode;
   snapshot: SessionMemorySnapshot;
-  sentiment: "cheer" | "boo" | "neutral";
+  sentiment: FeedbackSentiment;
+  behaviorLevel?: FeedbackBehaviorLevel;
   /** Topic seed for the room (env/config, outpost subject/tags, etc.). */
   topicSeed?: string;
   /** Optional extra context about the outpost (subject, tags, etc.). */
@@ -30,6 +40,7 @@ export interface BuildPromptArgs {
 export class PromptManager {
   private readonly systemPrompt: string;
   private readonly storytellerAddendum: string;
+  private readonly feedbackContextBuilder: FeedbackContextBuilder;
 
   constructor(cfg: PromptManagerConfig = {}) {
     this.systemPrompt = cfg.systemPrompt ?? CO_HOST_SYSTEM_PROMPT;
@@ -37,10 +48,15 @@ export class PromptManager {
       "When starting a new conversation, you can speak like a master storyteller: set the scene, build intrigue, and invite participation.",
       "Be vivid but concise. Avoid long monologues; include a question to pull the audience in.",
     ].join("\n");
+    this.feedbackContextBuilder = cfg.feedbackContextBuilder ?? ((args) => buildFeedbackContext(args));
   }
 
   buildMessages(args: BuildPromptArgs): Message[] {
-    const feedbackLine = buildFeedbackLine(args.sentiment, true);
+    const feedbackLine = this.feedbackContextBuilder({
+      sentiment: args.sentiment,
+      behaviorLevel: args.behaviorLevel,
+      lastMinute: true,
+    });
     const historyMessages = memoryToMessages(args.snapshot, feedbackLine);
 
     if (args.mode === "opener") {

@@ -11,15 +11,21 @@ const co_host_1 = require("./co-host");
 class PromptManager {
     systemPrompt;
     storytellerAddendum;
+    feedbackContextBuilder;
     constructor(cfg = {}) {
         this.systemPrompt = cfg.systemPrompt ?? co_host_1.CO_HOST_SYSTEM_PROMPT;
         this.storytellerAddendum = cfg.storytellerAddendum ?? [
             "When starting a new conversation, you can speak like a master storyteller: set the scene, build intrigue, and invite participation.",
             "Be vivid but concise. Avoid long monologues; include a question to pull the audience in.",
         ].join("\n");
+        this.feedbackContextBuilder = cfg.feedbackContextBuilder ?? ((args) => (0, co_host_1.buildFeedbackContext)(args));
     }
     buildMessages(args) {
-        const feedbackLine = (0, co_host_1.buildFeedbackLine)(args.sentiment, true);
+        const feedbackLine = this.feedbackContextBuilder({
+            sentiment: args.sentiment,
+            behaviorLevel: args.behaviorLevel,
+            lastMinute: true,
+        });
         const historyMessages = (0, co_host_1.memoryToMessages)(args.snapshot, feedbackLine);
         if (args.mode === "opener") {
             const topic = (args.topicSeed || "").trim();
