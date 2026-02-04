@@ -28,6 +28,12 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private txSeq;
     private readonly debugFrames;
     private readonly saveWav;
+    private readonly botDiag;
+    private readonly botDiagDurationMs;
+    private readonly artifactRetentionN;
+    private readonly preMixerPassThreshold;
+    private readonly sessionId;
+    private readonly conferenceId;
     private wavBuffers;
     private wavBytes;
     private wroteWav;
@@ -38,6 +44,19 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private rxLevelFrameCount;
     private lastRoomAudioSilentWarnAt;
     private lastMixerLevelLogAt;
+    private lastNodeRoomAudioMaxAbs;
+    private lastTtsFrameSentAt;
+    private remoteTrackSeen;
+    private consecutiveNoInboundProbes;
+    private consecutiveNoOutboundProbes;
+    private diagStatsStream;
+    private diagStatsPath;
+    private diagStartedAt;
+    private diagTimer;
+    private diagMaxInboundBytesDelta;
+    private diagMaxPreMixerMaxAbs;
+    private diagMaxPostMixerMaxAbs;
+    private diagMaxOutboundBytesDelta;
     constructor(config: JitsiConfig);
     onIncomingAudio(callback: (buffer: Buffer, sampleRate: number) => void): void;
     /**
@@ -45,6 +64,9 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
      * Node is receiving non-silent audio (if levels are ~0, VAD will never fire).
      */
     private updateRoomAudioLevel;
+    private startBotDiagIfEnabled;
+    private finishBotDiag;
+    private handleTruthProbe;
     private flushTxFrames;
     pushAudio(buffer: Buffer): void;
     /** True if browser and bridge are alive (for watchdog). */

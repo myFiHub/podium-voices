@@ -7,6 +7,7 @@
 import * as http from "http";
 import * as path from "path";
 import * as fs from "fs";
+import { randomUUID } from "crypto";
 import type { JitsiConfig, IJitsiRoom } from "./jitsi";
 import { pcmToWav } from "../pipeline/audio-utils";
 import {
@@ -21,6 +22,45 @@ import { logger } from "../logging";
 const DEFAULT_BRIDGE_PORT = 8766;
 const BRIDGE_PORT_RETRY_COUNT = 25;
 const MAX_TX_BUFFER_BYTES = 2 * 1024 * 1024; // 2MB of 48kHz s16le (~21s) safety cap.
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function purgeOldFilesByMtime(dir: string, keepN: number, filenameIncludes?: string): void {
+  if (keepN <= 0) return;
+  try {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs
+      .readdirSync(dir)
+      .map((name) => {
+        const full = path.join(dir, name);
+        let mtimeMs = 0;
+        try {
+          const st = fs.statSync(full);
+          mtimeMs = st.mtimeMs;
+        } catch {
+          // ignore
+        }
+        return { name, full, mtimeMs };
+      })
+      .filter((e) => !filenameIncludes || e.name.includes(filenameIncludes))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    for (const e of entries.slice(keepN)) {
+      try {
+        fs.unlinkSync(e.full);
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
 
 /** Strip protocol and path so libUrl and bot config always use a valid hostname. */
 function domainHostOnly(domain: string): string {
@@ -68,6 +108,12 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private txSeq = 0;
   private readonly debugFrames = process.env.DEBUG_AUDIO_FRAMES === "1";
   private readonly saveWav = process.env.SAVE_TTS_WAV === "1";
+  private readonly botDiag = process.env.BOT_DIAG === "1";
+  private readonly botDiagDurationMs = envInt("BOT_DIAG_DURATION_MS", 20_000);
+  private readonly artifactRetentionN = envInt("ARTIFACT_RETENTION_N", 10);
+  private readonly preMixerPassThreshold = envInt("PRE_MIXER_PASS_THRESHOLD", 200);
+  private readonly sessionId: string;
+  private readonly conferenceId: string;
   private wavBuffers: Buffer[] = [];
   private wavBytes = 0;
   private wroteWav = false;
@@ -78,9 +124,26 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private rxLevelFrameCount = 0;
   private lastRoomAudioSilentWarnAt = 0;
   private lastMixerLevelLogAt = 0;
+  private lastNodeRoomAudioMaxAbs = 0;
+  private lastTtsFrameSentAt = 0;
+  private remoteTrackSeen = false;
+  private consecutiveNoInboundProbes = 0;
+  private consecutiveNoOutboundProbes = 0;
+
+  // BOT_DIAG state (writes stats.jsonl and prints a verdict).
+  private diagStatsStream: fs.WriteStream | null = null;
+  private diagStatsPath: string | null = null;
+  private diagStartedAt = 0;
+  private diagTimer: ReturnType<typeof setTimeout> | null = null;
+  private diagMaxInboundBytesDelta = 0;
+  private diagMaxPreMixerMaxAbs = 0;
+  private diagMaxPostMixerMaxAbs = 0;
+  private diagMaxOutboundBytesDelta = 0;
 
   constructor(config: JitsiConfig) {
     this.config = config;
+    this.sessionId = (process.env.SESSION_ID && process.env.SESSION_ID.trim()) || randomUUID();
+    this.conferenceId = String(config.roomName || "");
   }
 
   onIncomingAudio(callback: (buffer: Buffer, sampleRate: number) => void): void {
@@ -118,6 +181,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
       }
       const numSamples = len / 2;
       const rms = numSamples > 0 ? Math.sqrt(sumSq / numSamples) : 0;
+      this.lastNodeRoomAudioMaxAbs = maxAbs;
       const isSilent = rms <= 0 && maxAbs <= 0;
       const now = Date.now();
       const ROOM_AUDIO_SILENT_WARN_INTERVAL_MS = 60_000;
@@ -148,6 +212,274 @@ export class JitsiBrowserBot implements IJitsiRoom {
           "Room audio level at Node (if rms/maxAbs near 0, VAD will not detect speech; raise mic or lower VAD_ENERGY_THRESHOLD)"
         );
       }
+    }
+  }
+
+  private startBotDiagIfEnabled(): void {
+    if (!this.botDiag) return;
+    if (this.diagStartedAt > 0) return;
+
+    this.diagStartedAt = Date.now();
+    const outDir = path.resolve(process.cwd(), "logs", "diag");
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+    const safeConf = (this.conferenceId || "conf").replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
+    const outPath = path.join(outDir, `${safeConf}_${this.sessionId}_stats.jsonl`);
+    this.diagStatsPath = outPath;
+    this.diagStatsStream = fs.createWriteStream(outPath, { flags: "a" });
+
+    logger.info(
+      {
+        event: "BOT_DIAG_STARTED",
+        sessionId: this.sessionId,
+        conferenceId: this.conferenceId,
+        durationMs: this.botDiagDurationMs,
+        statsPath: outPath,
+      },
+      "BOT_DIAG enabled: collecting truth probes for diagnosis"
+    );
+    logger.info(
+      { event: "BOT_DIAG_EXIT_NOTE", durationMs: this.botDiagDurationMs },
+      "BOT_DIAG: process will exit after duration with verdict (OK → exit 0, otherwise exit 2)"
+    );
+
+    if (this.diagTimer) clearTimeout(this.diagTimer);
+    this.diagTimer = setTimeout(() => this.finishBotDiag(), this.botDiagDurationMs);
+  }
+
+  private finishBotDiag(): void {
+    if (!this.botDiag) return;
+    if (this.diagStartedAt <= 0) return;
+
+    const threshold = this.preMixerPassThreshold;
+    const hasInbound = this.diagMaxInboundBytesDelta > 0;
+    const premixOk = this.diagMaxPreMixerMaxAbs > threshold;
+    const postmixOk = this.diagMaxPostMixerMaxAbs > 0;
+    const nodeOk = this.lastNodeRoomAudioMaxAbs > 0;
+
+    let receiveVerdict:
+      | "NO_INBOUND_RTP"
+      | "INBOUND_RTP_BUT_PREMIX_SILENT"
+      | "PREMIX_OK_BUT_MIXER_SILENT"
+      | "MIXER_OK_BUT_NODE_SILENT"
+      | "OK" = "OK";
+    if (!hasInbound) receiveVerdict = "NO_INBOUND_RTP";
+    else if (!premixOk) receiveVerdict = "INBOUND_RTP_BUT_PREMIX_SILENT";
+    else if (!postmixOk) receiveVerdict = "PREMIX_OK_BUT_MIXER_SILENT";
+    else if (!nodeOk) receiveVerdict = "MIXER_OK_BUT_NODE_SILENT";
+
+    const ttsSentDuringDiag = this.lastTtsFrameSentAt >= this.diagStartedAt;
+    const publishOk = !ttsSentDuringDiag || this.diagMaxOutboundBytesDelta > 0;
+    const verdict = receiveVerdict === "OK" && !publishOk ? "PUBLISH_BYTES_NOT_INCREASING" : receiveVerdict;
+
+    const level = verdict === "OK" ? "info" : "warn";
+    const verdictMsg =
+      verdict === "INBOUND_RTP_BUT_PREMIX_SILENT"
+        ? "BOT_DIAG verdict: inbound RTP but pre-mixer silent. Check statsPath for premixer_bindings/receiver_tracks; if boundVia is 'receiver' and track id matches audio_inbound_track_identifier, try BROWSER_HEADED=true (docs/AUDIO_DEBUGGING.md)."
+        : "BOT_DIAG verdict (see statsPath for raw samples)";
+    (logger as any)[level](
+      {
+        event: "BOT_DIAG_VERDICT",
+        verdict,
+        sessionId: this.sessionId,
+        conferenceId: this.conferenceId,
+        durationMs: Date.now() - this.diagStartedAt,
+        preMixerPassThreshold: threshold,
+        maxInboundBytesDelta: this.diagMaxInboundBytesDelta,
+        maxPreMixerMaxAbs: this.diagMaxPreMixerMaxAbs,
+        maxPostMixerMaxAbs: this.diagMaxPostMixerMaxAbs,
+        maxOutboundBytesDelta: this.diagMaxOutboundBytesDelta,
+        nodeRoomMaxAbs: this.lastNodeRoomAudioMaxAbs,
+        statsPath: this.diagStatsPath,
+      },
+      verdictMsg
+    );
+
+    try {
+      this.diagStatsStream?.end();
+    } catch {
+      // ignore
+    }
+    this.diagStatsStream = null;
+
+    try {
+      const outDir = path.resolve(process.cwd(), "logs", "diag");
+      purgeOldFilesByMtime(outDir, this.artifactRetentionN, "_stats.jsonl");
+      const audioDir = path.resolve(process.cwd(), "debug-audio");
+      purgeOldFilesByMtime(audioDir, this.artifactRetentionN);
+    } catch {
+      // ignore
+    }
+
+    // Deterministic diagnostic mode: exit after printing verdict.
+    setTimeout(() => process.exit(verdict === "OK" ? 0 : 2), 250);
+  }
+
+  private handleTruthProbe(msg: {
+    ts?: number;
+    sessionId?: string;
+    conferenceId?: string;
+    audio_inbound_bytes_delta?: number;
+    audio_inbound_packets_delta?: number;
+    audio_inbound_track_identifier?: string;
+    inbound_mid?: string;
+    pre_mixer_max_abs?: number;
+    pre_mixer_by_track_id?: Record<string, number>;
+    premixer_bindings?: Array<{ participantId?: string; requestedTrackId?: string; boundTrackId?: string; boundVia?: string; pre_mixer_max_abs?: number }>;
+    receiver_tracks?: Array<{ id?: string; kind?: string; muted?: boolean; readyState?: string }>;
+    post_mixer_max_abs?: number;
+    outbound_audio_bytes_delta?: number;
+    outbound_audio_bytes_sent?: number;
+    outbound_audio_track_identifier?: string;
+    selected_candidate_pair_state?: string;
+    audio_transceivers?: unknown;
+    audio_context_state?: string;
+  }): void {
+    const now = Date.now();
+    const inboundBytesDelta = typeof msg.audio_inbound_bytes_delta === "number" ? msg.audio_inbound_bytes_delta : 0;
+    const inboundPacketsDelta =
+      typeof msg.audio_inbound_packets_delta === "number" ? msg.audio_inbound_packets_delta : 0;
+    const preMix = typeof msg.pre_mixer_max_abs === "number" ? msg.pre_mixer_max_abs : 0;
+    const postMix = typeof msg.post_mixer_max_abs === "number" ? msg.post_mixer_max_abs : 0;
+    const outboundDelta = typeof msg.outbound_audio_bytes_delta === "number" ? msg.outbound_audio_bytes_delta : 0;
+
+    // Update BOT_DIAG maxima and write raw samples.
+    this.diagMaxInboundBytesDelta = Math.max(this.diagMaxInboundBytesDelta, inboundBytesDelta);
+    this.diagMaxPreMixerMaxAbs = Math.max(this.diagMaxPreMixerMaxAbs, preMix);
+    this.diagMaxPostMixerMaxAbs = Math.max(this.diagMaxPostMixerMaxAbs, postMix);
+    this.diagMaxOutboundBytesDelta = Math.max(this.diagMaxOutboundBytesDelta, outboundDelta);
+    if (this.diagStatsStream) {
+      try {
+        this.diagStatsStream.write(
+          JSON.stringify({
+            node_ts: now,
+            sessionId: this.sessionId,
+            conferenceId: this.conferenceId,
+            ...msg,
+          }) + "\n"
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    logger.info(
+      {
+        event: "TRUTH_PROBE",
+        sessionId: this.sessionId,
+        conferenceId: this.conferenceId,
+        ts: msg.ts ?? now,
+        audio_inbound_bytes_delta: inboundBytesDelta,
+        audio_inbound_packets_delta: inboundPacketsDelta,
+        pre_mixer_max_abs: preMix,
+        pre_mixer_by_track_id: msg.pre_mixer_by_track_id,
+        post_mixer_max_abs: postMix,
+        outbound_audio_bytes_delta: outboundDelta,
+        outbound_audio_bytes_sent: typeof msg.outbound_audio_bytes_sent === "number" ? msg.outbound_audio_bytes_sent : 0,
+        selected_candidate_pair_state: msg.selected_candidate_pair_state,
+        audio_context_state: msg.audio_context_state,
+      },
+      "Truth probe (RTP + pre/post mixer) from bot page"
+    );
+
+    // Receive contract (only meaningful when inbound bytes are increasing, or in BOT_DIAG mode).
+    const threshold = this.preMixerPassThreshold;
+    if (inboundBytesDelta > 0) {
+      this.consecutiveNoInboundProbes = 0;
+      const premixOk = preMix > threshold;
+      const postmixOk = postMix > 0;
+      if (!premixOk) {
+        logger.warn(
+          {
+            event: "health_contract_receive",
+            pass: false,
+            reason: "WRONG_TRACK",
+            sessionId: this.sessionId,
+            conferenceId: this.conferenceId,
+            audio_inbound_bytes_delta: inboundBytesDelta,
+            pre_mixer_max_abs: preMix,
+            post_mixer_max_abs: postMix,
+            audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
+          },
+          "Receive contract failed: inbound RTP present, but pre-mixer is silent (likely wrong track binding / phased negotiation)"
+        );
+      } else if (!postmixOk) {
+        logger.warn(
+          {
+            event: "health_contract_receive",
+            pass: false,
+            reason: "MIXER_WIRING",
+            sessionId: this.sessionId,
+            conferenceId: this.conferenceId,
+            audio_inbound_bytes_delta: inboundBytesDelta,
+            pre_mixer_max_abs: preMix,
+            post_mixer_max_abs: postMix,
+          },
+          "Receive contract failed: pre-mixer has audio, but post-mixer is silent (mixer wiring / pull issue)"
+        );
+      } else {
+        logger.debug(
+          {
+            event: "health_contract_receive",
+            pass: true,
+            sessionId: this.sessionId,
+            conferenceId: this.conferenceId,
+            audio_inbound_bytes_delta: inboundBytesDelta,
+            pre_mixer_max_abs: preMix,
+            post_mixer_max_abs: postMix,
+          },
+          "Receive contract passed (inbound RTP and non-silent pre/post mixer)"
+        );
+      }
+    } else if (this.remoteTrackSeen) {
+      this.consecutiveNoInboundProbes++;
+      // Avoid false alarms during silence: only warn after sustained no-inbound while a remote track exists.
+      if (this.consecutiveNoInboundProbes >= 5 && !this.botDiag) {
+        this.consecutiveNoInboundProbes = 0;
+        logger.warn(
+          {
+            event: "health_contract_receive",
+            pass: false,
+            reason: "NO_INBOUND_RTP",
+            sessionId: this.sessionId,
+            conferenceId: this.conferenceId,
+            consecutiveNoInboundProbes: 5,
+          },
+          "Receive contract: no inbound RTP observed for ~10s while remote tracks exist (may still be silence; run BOT_DIAG for deterministic verdict)"
+        );
+      }
+    }
+
+    // Publish contract: when we recently sent TTS frames, outbound bytes should increase.
+    const ttsRecent = now - this.lastTtsFrameSentAt < 5000;
+    if (ttsRecent) {
+      if (outboundDelta <= 0) {
+        this.consecutiveNoOutboundProbes++;
+        if (this.consecutiveNoOutboundProbes >= 3 && !this.botDiag) {
+          this.consecutiveNoOutboundProbes = 0;
+          logger.warn(
+            {
+              event: "health_contract_publish",
+              pass: false,
+              reason: "PUBLISH_BYTES_NOT_INCREASING",
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              outbound_audio_bytes_delta: outboundDelta,
+              outbound_audio_bytes_sent: msg.outbound_audio_bytes_sent,
+              outbound_audio_track_identifier: msg.outbound_audio_track_identifier,
+            },
+            "Publish contract failed: TTS frames sent, but outbound RTP bytesSent did not increase"
+          );
+        }
+      } else {
+        this.consecutiveNoOutboundProbes = 0;
+        logger.debug(
+          { event: "health_contract_publish", pass: true, sessionId: this.sessionId, conferenceId: this.conferenceId, outbound_audio_bytes_delta: outboundDelta },
+          "Publish contract passed (outbound RTP bytesSent increased during TTS)"
+        );
+      }
+    } else {
+      this.consecutiveNoOutboundProbes = 0;
     }
   }
 
@@ -379,10 +711,26 @@ export class JitsiBrowserBot implements IJitsiRoom {
             success?: boolean;
             error?: string;
             participantId?: string;
+            track_id?: string;
             track_readyState?: string;
             track_enabled?: boolean;
+            track_muted?: boolean;
             rx_bytes?: number;
             stats?: Record<string, unknown>;
+            // truth_probe (bot-page → Node, every ~2s)
+            sessionId?: string;
+            conferenceId?: string;
+            ts?: number;
+            audio_inbound_bytes_delta?: number;
+            audio_inbound_packets_delta?: number;
+            audio_inbound_track_identifier?: string;
+            pre_mixer_max_abs?: number;
+            post_mixer_max_abs?: number;
+            outbound_audio_bytes_delta?: number;
+            outbound_audio_bytes_sent?: number;
+            outbound_audio_track_identifier?: string;
+            selected_candidate_pair_state?: string;
+            audio_transceivers?: unknown;
             message?: string;
             name?: string;
             stack?: string;
@@ -402,6 +750,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
             if (msg.success) {
               this.jitsiJoinedAt = this.jitsiJoinedAt || Date.now();
               logger.info({ event: "BOT_JITSI_JOINED" }, "Bot joined Jitsi conference");
+              this.startBotDiagIfEnabled();
             } else {
               logger.error({ event: "BOT_JITSI_JOIN_FAILED", error: msg.error }, "Bot failed to join Jitsi: " + (msg.error ?? "unknown"));
             }
@@ -440,20 +789,59 @@ export class JitsiBrowserBot implements IJitsiRoom {
               "Bot page received debug audio frame"
             );
           } else if (msg.type === "remote_track_added") {
+            this.remoteTrackSeen = true;
             logger.info(
               {
                 event: "BOT_REMOTE_TRACK_ADDED",
                 participantId: msg.participantId ?? "",
+                track_id: msg.track_id,
                 track_readyState: msg.track_readyState,
                 track_enabled: msg.track_enabled,
+                track_muted: msg.track_muted,
               },
               "Bot attached remote participant audio to mixer (room audio in)"
+            );
+          } else if (msg.type === "track_rebind") {
+            logger.info(
+              {
+                event: "BOT_TRACK_REBIND",
+                sessionId: this.sessionId,
+                conferenceId: this.conferenceId,
+                inbound_track_identifier: (msg as any).inbound_track_identifier,
+                participantId: msg.participantId ?? "",
+                track_id: msg.track_id,
+              },
+              "Bot page rebound remote track based on inbound RTP trackIdentifier"
+            );
+          } else if (msg.type === "receiver_track_used") {
+            logger.info(
+              {
+                event: "BOT_RECEIVER_TRACK_USED",
+                sessionId: this.sessionId,
+                conferenceId: this.conferenceId,
+                track_id: (msg as any).track_id,
+                participantId: (msg as any).participantId ?? "",
+              },
+              "Bot using PC receiver track for mixer (not Jitsi wrapper)"
+            );
+          } else if (msg.type === "track_rebind_receiver") {
+            logger.info(
+              {
+                event: "BOT_TRACK_REBIND_RECEIVER",
+                sessionId: this.sessionId,
+                conferenceId: this.conferenceId,
+                inbound_track_identifier: (msg as any).inbound_track_identifier,
+                boundTrackId: (msg as any).boundTrackId ?? "",
+              },
+              "Bot rebound mixer to receiver track (inbound RTP present but premixer was silent)"
             );
           } else if (msg.type === "rx_audio_started") {
             logger.info(
               { event: "BOT_RX_AUDIO_STARTED", rx_bytes: msg.rx_bytes ?? 0 },
               "Room audio in: first bytes received from mixer (speak unmuted to get USER_TRANSCRIPT)"
             );
+          } else if (msg.type === "truth_probe") {
+            this.handleTruthProbe(msg);
           } else if (msg.type === "stats" && msg.stats) {
             this.lastStats = msg.stats;
             const now = Date.now();
@@ -505,14 +893,24 @@ export class JitsiBrowserBot implements IJitsiRoom {
             }
           } else if (msg.type === "wav_capture" && typeof msg.pcm48_b64 === "string") {
             try {
-              const label = (msg.label ?? "page").replace(/[^a-z0-9_-]/gi, "_");
+              let label = (msg.label ?? "page").replace(/[^a-z0-9_-]/gi, "_");
+              if (this.botDiag) {
+                // Make BOT_DIAG artifacts self-explanatory.
+                if (label === "page_rx") label = "room_rx";
+                if (label === "page_out") label = "tts_out";
+              }
               const pcm = Buffer.from(msg.pcm48_b64, "base64");
               const wav = pcmToWav(pcm, 48000);
-              const outDir = path.resolve(process.cwd(), "debug-audio");
+              const outDir = this.botDiag ? path.resolve(process.cwd(), "logs", "diag") : path.resolve(process.cwd(), "debug-audio");
               if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-              const outPath = path.join(outDir, `tts_${label}_${Date.now()}.wav`);
+              const safeConf = (this.conferenceId || "conf").replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
+              const outPath = path.join(outDir, `${safeConf}_${this.sessionId}_${label}_${Date.now()}.wav`);
               fs.writeFileSync(outPath, wav);
-              logger.warn({ event: "AUDIO_WAV_SAVED", where: label, path: outPath, bytes: wav.length }, "Saved page WAV capture");
+              logger.warn(
+                { event: "AUDIO_WAV_SAVED", sessionId: this.sessionId, conferenceId: this.conferenceId, where: label, path: outPath, bytes: wav.length },
+                "Saved page WAV capture"
+              );
+              purgeOldFilesByMtime(outDir, this.artifactRetentionN);
             } catch (e) {
               logger.warn({ event: "AUDIO_WAV_SAVE_FAILED", where: "page", err: (e as Error).message }, "Failed saving page WAV");
             }
@@ -571,6 +969,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
           } else {
             this.ws.send(frame);
           }
+          this.lastTtsFrameSentAt = Date.now();
           this.txBytesTotal += frame.length;
           this.lastRxTxAt = Date.now();
         } catch {
@@ -595,6 +994,9 @@ export class JitsiBrowserBot implements IJitsiRoom {
         xmppDomain: this.config.xmppDomain,
         mucDomain: this.config.mucDomain,
         roomName: this.config.roomName,
+        sessionId: this.sessionId,
+        conferenceId: this.conferenceId,
+        botDiag: this.botDiag,
         user: this.config.user,
         creatorUuid: this.config.creatorUuid,
         cohostUuids: this.config.cohostUuids,
@@ -602,7 +1004,10 @@ export class JitsiBrowserBot implements IJitsiRoom {
       };
       if (this.config.jwt) joinConfig.jwt = this.config.jwt;
       ws.send(JSON.stringify({ type: "join", config: joinConfig }));
-      logger.info({ event: "BOT_JOIN_SENT", domain: host, xmppDomain: this.config.xmppDomain, roomName: this.config.roomName }, "Sent join to bot page");
+      logger.info(
+        { event: "BOT_JOIN_SENT", sessionId: this.sessionId, conferenceId: this.conferenceId, domain: host, xmppDomain: this.config.xmppDomain, roomName: this.config.roomName },
+        "Sent join to bot page"
+      );
     });
 
     const playwright = await import("playwright");
@@ -667,7 +1072,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
     // - Ensure the bot page has the ?ws= bridge param; otherwise it defaults to ws://127.0.0.1:8766/bridge and breaks if port differs.
     const defaultPageUrl = `http://127.0.0.1:${this.bridgePort}/bot.html?ws=ws://127.0.0.1:${this.bridgePort}/bridge`;
     let pageUrl = defaultPageUrl;
-    if (!this.config.botPageUrl && process.env.SAVE_TTS_WAV === "1") {
+    if (!this.config.botPageUrl && (process.env.SAVE_TTS_WAV === "1" || this.botDiag)) {
       try {
         const u = new URL(pageUrl);
         if (!u.searchParams.has("saveWav")) u.searchParams.set("saveWav", "1");
@@ -687,7 +1092,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
           u.searchParams.set("ws", `ws://127.0.0.1:${this.bridgePort}/bridge`);
         }
         // Debug-only: enable WAV capture from bot page.
-        if (process.env.SAVE_TTS_WAV === "1" && !u.searchParams.has("saveWav")) {
+        if ((process.env.SAVE_TTS_WAV === "1" || this.botDiag) && !u.searchParams.has("saveWav")) {
           u.searchParams.set("saveWav", "1");
         }
         pageUrl = u.toString();

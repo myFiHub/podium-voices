@@ -61,8 +61,16 @@
   let micSilenceSource = null;
   let pcStatsInterval = null;
   let lastOutboundBytesSent = 0;
+  let lastInboundBytesReceived = 0;
+  let lastInboundPacketsReceived = 0;
+  let lastTruthProbeAt = 0;
+  let sessionId = "";
+  let conferenceId = "";
+  let joinedAtMs = 0;
   /** Participant IDs we have already attached to the mixer (avoid duplicate streams). */
   var remoteParticipantsAdded = {};
+  /** Per-participant binding info to support stats-based rebinding and pre-mixer analysis. */
+  var remoteBindings = {}; // key -> { participantId, trackId, source, analyser, analyserBuf, chromeConsumeAudio? }
 
   // Capture uncaught errors/rejections with as much context as the browser provides.
   // Playwright's pageerror sometimes lacks stack traces; these hooks often include them.
@@ -462,6 +470,43 @@
     return stream && stream.getAudioTracks && stream.getAudioTracks().length ? stream : null;
   }
 
+  /**
+   * Chromium workaround (bug 933677): a remote WebRTC audio MediaStream may not feed decoded PCM
+   * into Web Audio (MediaStreamAudioSourceNode / analyser / recorder) unless the same stream is
+   * also "consumed" by a media element. We attach a muted <audio> element and call play() to
+   * force Chrome to decode the remote track.
+   */
+  function createChromeRemoteAudioConsumer(stream, debugLabel) {
+    try {
+      if (!stream || typeof stream.getAudioTracks !== "function" || stream.getAudioTracks().length === 0) return null;
+      var audio = new Audio();
+      audio.muted = true; // muted playback is allowed without a user gesture in Chromium
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.srcObject = stream;
+      var p = audio.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(function (err) {
+          // Keep this as a warning (not error): failure here is often autoplay/device related,
+          // and the rest of the bot can still operate (e.g., TTS out).
+          console.warn("Bot: remote audio consumer play() failed", debugLabel || "", err);
+        });
+      }
+      return audio;
+    } catch (e) {
+      console.warn("Bot: could not create remote audio consumer", debugLabel || "", e);
+      return null;
+    }
+  }
+
+  function disposeChromeRemoteAudioConsumer(audioElem) {
+    try {
+      if (!audioElem) return;
+      try { if (typeof audioElem.pause === "function") audioElem.pause(); } catch (e) { /* ignore */ }
+      try { audioElem.srcObject = null; } catch (e) { /* ignore */ }
+    } catch (e) { /* ignore */ }
+  }
+
   function addRemoteTrackToMixer(streamOrTrack, participantIdForLog) {
     var stream = null;
     var underlyingTrack = null;
@@ -480,11 +525,24 @@
       console.warn("Bot: remote audio track already ended, skipping", participantIdForLog);
       return;
     }
-    if (participantIdForLog != null) {
-      var pid = String(participantIdForLog);
-      if (remoteParticipantsAdded[pid]) return;
-      remoteParticipantsAdded[pid] = true;
-    }
+    // Use participant id when available; otherwise fall back to track id.
+    // This key is used for pre-mixer probing and for stats-based rebinding (phased negotiation).
+    var bindingKey = participantIdForLog != null ? String(participantIdForLog) : ("track:" + String(underlyingTrack.id || ""));
+    if (!bindingKey) bindingKey = "unknown:" + Math.random().toString(36).slice(2);
+
+    // If we already attached something for this participant, only keep it if it is the same underlying receiver track id.
+    // If the track id changed, disconnect the old nodes and attach the new one.
+    try {
+      var existing = remoteBindings[bindingKey];
+      var newTrackId = String(underlyingTrack.id || "");
+      if (existing && existing.trackId && existing.trackId === newTrackId) return;
+      if (existing) {
+        try { if (existing.source && typeof existing.source.disconnect === "function") existing.source.disconnect(); } catch (e) { /* ignore */ }
+        try { if (existing.analyser && typeof existing.analyser.disconnect === "function") existing.analyser.disconnect(); } catch (e) { /* ignore */ }
+        try { disposeChromeRemoteAudioConsumer(existing.chromeConsumeAudio); } catch (e) { /* ignore */ }
+        delete remoteBindings[bindingKey];
+      }
+    } catch (e) { /* ignore */ }
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: BRIDGE_SAMPLE_RATE });
     try {
       if (audioContext && audioContext.state === "suspended" && typeof audioContext.resume === "function") {
@@ -532,14 +590,50 @@
       if (underlyingTrack.enabled === false) {
         underlyingTrack.enabled = true;
       }
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(mixerGain);
+      // Prefer the peer connection receiver's track so we wire the exact track that receives RTP.
+      // Jitsi may pass a wrapper/clone with the same id; only receiver.track gets decoded audio.
+      var receiverTrack = getReceiverTrackById(underlyingTrack.id);
+      var trackForSource = receiverTrack || underlyingTrack;
+      var boundVia = receiverTrack ? "receiver" : "wrapper";
+      var streamForSource = trackForSource === underlyingTrack ? stream : new MediaStream([trackForSource]);
+      // Chromium workaround: ensure remote audio is "consumed" by a media element so Web Audio gets decoded PCM.
+      var chromeConsumeAudio = createChromeRemoteAudioConsumer(streamForSource, "add:" + bindingKey);
+      const source = audioContext.createMediaStreamSource(streamForSource);
+      // Pre-mixer analyser: lets Node distinguish \"no inbound RTP\" from \"RTP is arriving but we're mixing the wrong track\".
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0;
+      const analyserBuf = new Float32Array(analyser.fftSize);
+      source.connect(analyser);
+      analyser.connect(mixerGain);
+
+      remoteBindings[bindingKey] = {
+        participantId: participantIdForLog != null ? String(participantIdForLog) : "",
+        trackId: String(underlyingTrack.id || ""),
+        boundTrackId: String(trackForSource.id || ""),
+        boundVia: boundVia,
+        chromeConsumeAudio: chromeConsumeAudio,
+        source: source,
+        analyser: analyser,
+        analyserBuf: analyserBuf
+      };
+
+      if (participantIdForLog != null) {
+        remoteParticipantsAdded[String(participantIdForLog)] = true;
+      }
+      if (receiverTrack) {
+        sendToNode({ type: "receiver_track_used", track_id: String(receiverTrack.id), participantId: participantIdForLog != null ? String(participantIdForLog) : "" });
+      }
       if (participantIdForLog != null) {
         sendToNode({
           type: "remote_track_added",
           participantId: String(participantIdForLog),
+          track_id: String(underlyingTrack.id || ""),
           track_readyState: underlyingTrack.readyState,
-          track_enabled: underlyingTrack.enabled
+          track_enabled: underlyingTrack.enabled,
+          track_muted: underlyingTrack.muted === true,
+          boundVia: boundVia,
+          boundTrackId: String(trackForSource.id || "")
         });
       }
     } catch (err) {
@@ -586,6 +680,99 @@
     }
   }
 
+  /**
+   * Rebind the mixer to the actual receiver track (by id or by mid) when we have inbound RTP
+   * but the current binding is silent. Replaces the source/analyser for the binding that matches
+   * the inbound track id, using the track from pc.getReceivers() or getTransceivers().
+   */
+  function rebindMixerToReceiverTrack(inboundTrackId, inboundMid) {
+    if (!inboundTrackId || !mixerGain || !audioContext) return false;
+    var wanted = String(inboundTrackId);
+    var bindingKey = null;
+    var existing = null;
+    for (var k in remoteBindings) {
+      if (!Object.prototype.hasOwnProperty.call(remoteBindings, k)) continue;
+      var b = remoteBindings[k];
+      if (b && String(b.trackId || "") === wanted) { bindingKey = k; existing = b; break; }
+    }
+    if (!bindingKey || !existing) return false;
+    var receiverTrack = getReceiverTrackById(wanted);
+    if (!receiverTrack && inboundMid) {
+      var pcs = findPeerConnections();
+      if (pcs && pcs.length > 0) receiverTrack = getReceiverTrackByMid(pcs[0], inboundMid);
+    }
+    if (!receiverTrack) return false;
+    try {
+      if (existing.source && typeof existing.source.disconnect === "function") existing.source.disconnect();
+      if (existing.analyser && typeof existing.analyser.disconnect === "function") existing.analyser.disconnect();
+      disposeChromeRemoteAudioConsumer(existing.chromeConsumeAudio);
+    } catch (e) { /* ignore */ }
+    var streamForSource = new MediaStream([receiverTrack]);
+    var chromeConsumeAudio = createChromeRemoteAudioConsumer(streamForSource, "rebind:" + wanted);
+    var source = audioContext.createMediaStreamSource(streamForSource);
+    var analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0;
+    var analyserBuf = new Float32Array(analyser.fftSize);
+    source.connect(analyser);
+    analyser.connect(mixerGain);
+    remoteBindings[bindingKey] = {
+      participantId: existing.participantId,
+      trackId: wanted,
+      boundTrackId: String(receiverTrack.id || ""),
+      boundVia: "receiver",
+      chromeConsumeAudio: chromeConsumeAudio,
+      source: source,
+      analyser: analyser,
+      analyserBuf: analyserBuf
+    };
+    sendToNode({ type: "track_rebind_receiver", inbound_track_identifier: wanted, boundTrackId: String(receiverTrack.id) });
+    return true;
+  }
+
+  /**
+   * Track Binding Contract (stats-mapped): given a MediaStreamTrack.id that we believe is the active
+   * inbound receiver, scan current remote participants for an audio track whose underlying native
+   * track id matches and (re)attach it to the mixer.
+   */
+  function rebindToInboundTrackIdentifier(inboundTrackIdentifier) {
+    if (!inboundTrackIdentifier || !room || typeof room.getParticipants !== "function") return false;
+    var wanted = String(inboundTrackIdentifier);
+    var myId = localParticipantId != null ? localParticipantId : (room.myUserId && room.myUserId());
+    var participants;
+    try { participants = room.getParticipants(); } catch (e) { return false; }
+    if (!Array.isArray(participants)) return false;
+    for (var i = 0; i < participants.length; i++) {
+      var p = participants[i];
+      if (!p || isSameParticipant(p.getId && p.getId(), myId)) continue;
+      var tracks = [];
+      try {
+        if (p.getTracksByMediaType) {
+          var mediaType = (window.JitsiMeetJS && window.JitsiMeetJS.events && window.JitsiMeetJS.events.media && window.JitsiMeetJS.events.media.AUDIO) || "audio";
+          tracks = p.getTracksByMediaType(mediaType) || [];
+        }
+        if (!Array.isArray(tracks) || tracks.length === 0) tracks = (p.getTracks && p.getTracks()) || [];
+      } catch (e) {
+        tracks = (p.getTracks && p.getTracks()) || [];
+      }
+      if (!Array.isArray(tracks)) continue;
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j];
+        var type = (t.getType && t.getType()) || (t.kind || "");
+        if (type !== "audio") continue;
+        var underlying = (typeof t.getTrack === "function" && t.getTrack()) || t.track;
+        if (underlying && underlying.kind === "audio" && String(underlying.id || "") === wanted) {
+          try {
+            addRemoteTrackToMixer(t, p.getId && p.getId());
+            sendToNode({ type: "track_rebind", inbound_track_identifier: wanted, participantId: p.getId && p.getId(), track_id: underlying.id });
+          } catch (e) { /* ignore */ }
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   function findPeerConnections() {
     // Heuristic: search from `room` and `connection` for RTCPeerConnection-like objects.
     var pcs = [];
@@ -624,6 +811,75 @@
     return pcs;
   }
 
+  /**
+   * Return the actual MediaStreamTrack from a peer connection's receiver that has the given track id.
+   * Wiring this track (not a Jitsi wrapper or clone) to createMediaStreamSource ensures we get
+   * decoded RTP; using a different object with the same id can leave the mixer silent.
+   */
+  function getReceiverTrackById(trackId) {
+    if (!trackId) return null;
+    var want = String(trackId);
+    try {
+      var pcs = findPeerConnections();
+      if (!pcs || pcs.length === 0) return null;
+      for (var i = 0; i < pcs.length; i++) {
+        var pc = pcs[i];
+        if (!pc || typeof pc.getReceivers !== "function") continue;
+        var receivers = pc.getReceivers() || [];
+        for (var j = 0; j < receivers.length; j++) {
+          var r = receivers[j];
+          if (r && r.track && r.track.kind === "audio" && String(r.track.id) === want) return r.track;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /**
+   * Return the receiver's audio track for the transceiver with the given mid on the given PC.
+   * Use when inbound RTP stats are tied to a mid; binding by mid avoids id mismatches.
+   */
+  function getReceiverTrackByMid(pc, mid) {
+    if (!pc || !mid) return null;
+    try {
+      if (typeof pc.getTransceivers !== "function") return null;
+      var transceivers = pc.getTransceivers() || [];
+      var want = String(mid);
+      for (var i = 0; i < transceivers.length; i++) {
+        var t = transceivers[i];
+        if (!t || !t.receiver || !t.receiver.track) continue;
+        if (t.receiver.track.kind !== "audio") continue;
+        if (String(t.mid || "") === want) return t.receiver.track;
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /** Collect all audio receiver tracks from all PCs for diagnosis: { id, kind, muted, readyState }. */
+  function getAllReceiverTracks() {
+    var out = [];
+    try {
+      var pcs = findPeerConnections();
+      if (!pcs || pcs.length === 0) return out;
+      for (var i = 0; i < pcs.length; i++) {
+        var pc = pcs[i];
+        if (!pc || typeof pc.getReceivers !== "function") continue;
+        var receivers = pc.getReceivers() || [];
+        for (var j = 0; j < receivers.length; j++) {
+          var r = receivers[j];
+          if (!r || !r.track || r.track.kind !== "audio") continue;
+          out.push({
+            id: r.track.id,
+            kind: r.track.kind,
+            muted: r.track.muted === true,
+            readyState: r.track.readyState || ""
+          });
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+
   function startPcStatsPoll() {
     if (pcStatsInterval) return;
     pcStatsInterval = setInterval(function () {
@@ -635,16 +891,227 @@
         stats.pc_connection_state = pc.connectionState || "";
         pc.getStats(null).then(function (report) {
           var bytesSent = 0;
+          var bytesReceived = 0;
+          var packetsReceived = 0;
+          var inboundTrackIdentifier = "";
+          var inboundMid = "";
+          var outboundTrackIdentifier = "";
+          var selectedCandidatePairState = "";
+          var audioTransceivers = [];
           try {
             report.forEach(function (s) {
               // outbound-rtp audio is the decisive publish check
               if (s && s.type === "outbound-rtp" && (s.kind === "audio" || s.mediaType === "audio")) {
                 if (typeof s.bytesSent === "number") bytesSent = Math.max(bytesSent, s.bytesSent);
+                if (!outboundTrackIdentifier && s.trackId && typeof report.get === "function") {
+                  try {
+                    var ots = report.get(s.trackId);
+                    if (ots && typeof ots.trackIdentifier === "string") outboundTrackIdentifier = ots.trackIdentifier;
+                  } catch (e) { /* ignore */ }
+                }
+              }
+              // inbound-rtp audio is the decisive receive check
+              if (s && s.type === "inbound-rtp" && (s.kind === "audio" || s.mediaType === "audio")) {
+                if (typeof s.bytesReceived === "number") bytesReceived += s.bytesReceived;
+                if (typeof s.packetsReceived === "number") packetsReceived += s.packetsReceived;
+                if (!inboundMid && typeof s.mid === "string") inboundMid = s.mid;
+                if (!inboundTrackIdentifier && s.trackId && typeof report.get === "function") {
+                  try {
+                    var its = report.get(s.trackId);
+                    if (its && typeof its.trackIdentifier === "string") inboundTrackIdentifier = its.trackIdentifier;
+                  } catch (e) { /* ignore */ }
+                }
+              }
+              // Candidate pair state (best-effort).
+              if (s && s.type === "candidate-pair") {
+                var selected = (s.selected === true) || (s.nominated === true && s.state === "succeeded" && s.writable === true);
+                if (selected && typeof s.state === "string") selectedCandidatePairState = s.state;
               }
             });
           } catch (e) { /* ignore */ }
-          stats.out_audio_bytes_sent = bytesSent || 0;
+
+          // Outbound delta (publish contract).
+          var outDelta = 0;
+          try { outDelta = bytesSent - lastOutboundBytesSent; } catch (e) { outDelta = 0; }
+          if (outDelta < 0) outDelta = 0;
           lastOutboundBytesSent = bytesSent || lastOutboundBytesSent;
+          stats.out_audio_bytes_sent = bytesSent || 0;
+          stats.out_audio_bytes_sent_delta = outDelta || 0;
+          stats.out_audio_track_identifier = outboundTrackIdentifier;
+
+          // Inbound totals + deltas (receive contract).
+          var inDeltaBytes = 0;
+          var inDeltaPackets = 0;
+          try {
+            inDeltaBytes = bytesReceived - lastInboundBytesReceived;
+            inDeltaPackets = packetsReceived - lastInboundPacketsReceived;
+          } catch (e) { /* ignore */ }
+          if (inDeltaBytes < 0) inDeltaBytes = 0;
+          if (inDeltaPackets < 0) inDeltaPackets = 0;
+          lastInboundBytesReceived = bytesReceived;
+          lastInboundPacketsReceived = packetsReceived;
+          stats.audio_inbound_bytes_received = bytesReceived;
+          stats.audio_inbound_bytes_delta = inDeltaBytes;
+          stats.audio_inbound_packets_received = packetsReceived;
+          stats.audio_inbound_packets_delta = inDeltaPackets;
+          stats.audio_inbound_track_identifier = inboundTrackIdentifier;
+          stats.inbound_mid = inboundMid || "";
+          stats.selected_candidate_pair_state = selectedCandidatePairState;
+
+          // Transceivers summary (audio only).
+          try {
+            if (typeof pc.getTransceivers === "function") {
+              var trans = pc.getTransceivers() || [];
+              for (var i = 0; i < trans.length; i++) {
+                var t = trans[i];
+                var kind = (t && t.receiver && t.receiver.track && t.receiver.track.kind) ? t.receiver.track.kind : "";
+                if (kind !== "audio") continue;
+                audioTransceivers.push({
+                  mid: t.mid,
+                  direction: t.direction,
+                  currentDirection: t.currentDirection,
+                  receiverTrackId: t.receiver && t.receiver.track ? t.receiver.track.id : ""
+                });
+              }
+            }
+          } catch (e) { /* ignore */ }
+          stats.audio_transceivers = audioTransceivers;
+
+          // Fallback: derive inbound track identifier from audio transceivers when RTCStats doesn't expose trackId→trackIdentifier.
+          // Prefer: match inbound-rtp.mid → transceiver.mid. Else: pick a recvonly audio transceiver (remote audio), else first.
+          try {
+            if (!stats.audio_inbound_track_identifier && Array.isArray(audioTransceivers) && audioTransceivers.length > 0) {
+              var chosen = null;
+              if (inboundMid) {
+                for (var ii = 0; ii < audioTransceivers.length; ii++) {
+                  var at = audioTransceivers[ii];
+                  if (at && String(at.mid) === String(inboundMid) && at.receiverTrackId) { chosen = at; break; }
+                }
+              }
+              if (!chosen) {
+                for (var jj = 0; jj < audioTransceivers.length; jj++) {
+                  var at2 = audioTransceivers[jj];
+                  if (!at2) continue;
+                  if (String(at2.currentDirection || "") === "recvonly" || String(at2.direction || "") === "recvonly") { chosen = at2; break; }
+                }
+              }
+              if (!chosen) chosen = audioTransceivers[0];
+              if (chosen && chosen.receiverTrackId) stats.audio_inbound_track_identifier = String(chosen.receiverTrackId);
+            }
+          } catch (e) { /* ignore */ }
+
+          // Ensure AudioContext is running so analysers see data (e.g. after page load without user gesture).
+          try {
+            if (audioContext && audioContext.state === "suspended" && typeof audioContext.resume === "function") {
+              audioContext.resume().catch(function () { /* ignore */ });
+            }
+          } catch (e) { /* ignore */ }
+
+          // Pre-mixer maxAbs (0..32767), aggregated across attached remote sources; per-track for diagnosis.
+          var preMaxAbs = 0;
+          var preMixerByTrackId = {};
+          try {
+            for (var k in remoteBindings) {
+              if (!Object.prototype.hasOwnProperty.call(remoteBindings, k)) continue;
+              var b = remoteBindings[k];
+              if (!b || !b.analyser || !b.analyserBuf) continue;
+              try {
+                b.analyser.getFloatTimeDomainData(b.analyserBuf);
+                var m = 0;
+                for (var n = 0; n < b.analyserBuf.length; n++) {
+                  var v = b.analyserBuf[n];
+                  var a = v < 0 ? -v : v;
+                  if (a > m) m = a;
+                }
+                var abs16 = Math.round(m * 32767);
+                if (b.trackId) preMixerByTrackId[String(b.trackId)] = abs16;
+                if (abs16 > preMaxAbs) preMaxAbs = abs16;
+              } catch (e) { /* ignore */ }
+            }
+          } catch (e) { /* ignore */ }
+          stats.pre_mixer_max_abs = preMaxAbs;
+          stats.pre_mixer_by_track_id = preMixerByTrackId;
+
+          var now = Date.now();
+          // Track Binding Contract: during the first ~15s after join, prefer the track whose native id matches inbound RTP stats.
+          try {
+            var wanted = stats.audio_inbound_track_identifier ? String(stats.audio_inbound_track_identifier) : "";
+            if (wanted && joinedAtMs && now - joinedAtMs < 15000 && (stats.audio_inbound_bytes_delta || 0) > 0) {
+              var alreadyBound = false;
+              for (var kk in remoteBindings) {
+                if (!Object.prototype.hasOwnProperty.call(remoteBindings, kk)) continue;
+                var bb = remoteBindings[kk];
+                if (bb && String(bb.trackId || "") === wanted) { alreadyBound = true; break; }
+              }
+              if (!alreadyBound) {
+                rebindToInboundTrackIdentifier(wanted);
+              }
+            }
+          } catch (e) { /* ignore */ }
+
+          // When inbound RTP is present but premixer for that track is silent, rebind to receiver track (by id or mid).
+          // Only try when current binding is still "wrapper" to avoid churn and repeated disconnect/reconnect.
+          try {
+            var wantedT = stats.audio_inbound_track_identifier ? String(stats.audio_inbound_track_identifier) : "";
+            if (wantedT && (stats.audio_inbound_bytes_delta || 0) > 0) {
+              var premixForT = (stats.pre_mixer_by_track_id && stats.pre_mixer_by_track_id[wantedT]) || 0;
+              if (premixForT < 200) {
+                var bindingForT = null;
+                for (var bk in remoteBindings) {
+                  if (!Object.prototype.hasOwnProperty.call(remoteBindings, bk)) continue;
+                  if (String(remoteBindings[bk].trackId || "") === wantedT) { bindingForT = remoteBindings[bk]; break; }
+                }
+                if (bindingForT && (bindingForT.boundVia || "wrapper") === "wrapper") {
+                  rebindMixerToReceiverTrack(wantedT, stats.inbound_mid || "");
+                }
+              }
+            }
+          } catch (e) { /* ignore */ }
+
+          // Build Phase 1 diagnostics: premixer_bindings and receiver_tracks for truth probe.
+          var premixerBindings = [];
+          try {
+            for (var pk in remoteBindings) {
+              if (!Object.prototype.hasOwnProperty.call(remoteBindings, pk)) continue;
+              var pb = remoteBindings[pk];
+              if (!pb) continue;
+              var preAbs = (stats.pre_mixer_by_track_id && pb.trackId) ? (stats.pre_mixer_by_track_id[pb.trackId] || 0) : 0;
+              premixerBindings.push({
+                participantId: pb.participantId || "",
+                requestedTrackId: pb.trackId || "",
+                boundTrackId: pb.boundTrackId || "",
+                boundVia: pb.boundVia || "wrapper",
+                pre_mixer_max_abs: preAbs
+              });
+            }
+          } catch (e) { /* ignore */ }
+          var receiverTracks = getAllReceiverTracks();
+
+          // Push truth probe to Node every ~2s (contracts rely on deltas).
+          if (now - lastTruthProbeAt >= 1900) {
+            lastTruthProbeAt = now;
+            sendToNode({
+              type: "truth_probe",
+              sessionId: sessionId,
+              conferenceId: conferenceId,
+              ts: now,
+              audio_inbound_bytes_delta: stats.audio_inbound_bytes_delta || 0,
+              audio_inbound_packets_delta: stats.audio_inbound_packets_delta || 0,
+              audio_inbound_track_identifier: stats.audio_inbound_track_identifier || "",
+              inbound_mid: stats.inbound_mid || "",
+              pre_mixer_max_abs: stats.pre_mixer_max_abs || 0,
+              pre_mixer_by_track_id: stats.pre_mixer_by_track_id || {},
+              premixer_bindings: premixerBindings,
+              receiver_tracks: receiverTracks,
+              post_mixer_max_abs: stats.mixer_max_abs || 0,
+              outbound_audio_bytes_delta: stats.out_audio_bytes_sent_delta || 0,
+              outbound_audio_bytes_sent: stats.out_audio_bytes_sent || 0,
+              outbound_audio_track_identifier: stats.out_audio_track_identifier || "",
+              selected_candidate_pair_state: stats.selected_candidate_pair_state || "",
+              audio_transceivers: stats.audio_transceivers || [],
+              audio_context_state: (audioContext && audioContext.state) ? String(audioContext.state) : ""
+            });
+          }
         }).catch(function () { /* ignore */ });
       } catch (e) { /* ignore */ }
     }, 2000);
@@ -657,6 +1124,10 @@
       if (!host || typeof host !== "string") return Promise.reject(new Error("Bot join: config.domain required (hostname only)"));
       const roomName = config.roomName != null ? String(config.roomName).trim() : "";
       if (!roomName) return Promise.reject(new Error("Bot join: config.roomName required"));
+      try {
+        sessionId = config.sessionId != null ? String(config.sessionId) : sessionId;
+        conferenceId = config.conferenceId != null ? String(config.conferenceId) : roomName;
+      } catch (e) { /* ignore */ }
       const xmppDomain = (config.xmppDomain != null && String(config.xmppDomain).trim()) ? String(config.xmppDomain).trim() : host;
       /* lib-jitsi-meet getRoomJid() uses hosts.muc for the MUC part of the room JID (roomName@muc).
        * If hosts.muc is missing it is undefined and .toLowerCase() throws. Default: conference.<xmppDomain>. */
@@ -701,6 +1172,7 @@
               });
               room.on(window.JitsiMeetJS.events.conference.CONFERENCE_JOINED, function () {
                 stats.conference_state = "joined";
+                joinedAtMs = Date.now();
                 localParticipantId = room.myUserId(); // Set local participant ID on conference join
                 if (config.user && config.user.name) room.setDisplayName(config.user.name);
                 resolve();

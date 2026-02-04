@@ -36,6 +36,15 @@ Run with:
 LOG_LEVEL=info USE_JITSI_BOT=true DEBUG_AUDIO_FRAMES=1 SAVE_TTS_WAV=1 npm start
 ```
 
+- **`BOT_DIAG=1`** (deterministic verdict + artifacts):
+  - Runs a ~20s capture of `TRUTH_PROBE` samples (every ~2s) and writes `./logs/diag/*_stats.jsonl`.
+  - Prints a final verdict and exits: `NO_INBOUND_RTP`, `INBOUND_RTP_BUT_PREMIX_SILENT`, `PREMIX_OK_BUT_MIXER_SILENT`, `MIXER_OK_BUT_NODE_SILENT`, `PUBLISH_BYTES_NOT_INCREASING`, or `OK`.
+  - Recommended invocation:
+
+```bash
+LOG_LEVEL=info USE_JITSI_BOT=true BOT_DIAG=1 npm start
+```
+
 - **`DEBUG_AUDIO_FRAMES=1`**:
   - Node wraps each Node→browser frame as `[u32 seq LE][u8 xor][payload 1920 bytes]`.
   - Bot page responds with `frame_ack` containing `seq`, `xorHeader`, `xorComputed`, `maxAbs`, `nonZero`.
@@ -66,6 +75,42 @@ LOG_LEVEL=info USE_JITSI_BOT=true DEBUG_AUDIO_FRAMES=1 SAVE_TTS_WAV=1 npm start
 ## "Bot doesn't respond when I speak" (room audio in)
 
 If the **greeting is heard** but the bot never replies to your speech, the failure is on **room audio in**: the bot isn't receiving your mic.
+
+### Ground truth: does inbound RTP exist?
+
+Do not rely on **`BOT_REMOTE_TRACK_ADDED`** or `track.readyState === "live"` as proof. The dividing line is:
+
+- **Inbound RTP exists** when the bot's `RTCPeerConnection.getStats()` shows an **`inbound-rtp` audio** stat where **`bytesReceived` increases** while someone talks.
+
+In Node logs this is surfaced as **`TRUTH_PROBE`** every ~2 seconds:
+
+- **`audio_inbound_bytes_delta`**: should be > 0 during speech if RTP is arriving
+- **`pre_mixer_max_abs`**: analyser maxAbs (0..32767) before our mixer
+- **`post_mixer_max_abs`**: our existing mixer maxAbs (0..32767)
+- **`outbound_audio_bytes_delta`**: should be > 0 while the bot is speaking (publish contract)
+
+Health contract logs (when triggered):
+
+- **`health_contract_receive`**: PASS/FAIL with reason (`NO_INBOUND_RTP`, `WRONG_TRACK`, `MIXER_WIRING`)
+- **`health_contract_publish`**: PASS/FAIL with reason (`PUBLISH_BYTES_NOT_INCREASING`)
+
+### Interpreting `INBOUND_RTP_BUT_PREMIX_SILENT` (BOT_DIAG verdict)
+
+When **`audio_inbound_bytes_delta`** is > 0 but **`pre_mixer_max_abs`** stays 0, check **`./logs/diag/*_stats.jsonl`**:
+
+- **`premixer_bindings`**: For each bound track you see `requestedTrackId`, `boundTrackId`, **`boundVia`** (`"receiver"` or `"wrapper"`), and that track’s `pre_mixer_max_abs`.
+- **`receiver_tracks`**: List of PC receiver tracks (`id`, `kind`, `muted`, `readyState`).
+- **`audio_inbound_track_identifier`**: The track id that has increasing RTP in stats.
+
+**If** `boundVia === "receiver"` **and** `boundTrackId` (or `requestedTrackId`) **equals** `audio_inbound_track_identifier` **but** `pre_mixer_max_abs` is still 0:
+
+- **Track binding is correct** (we are wiring the same track that receives RTP). In Chromium, this can still yield silence because **remote WebRTC audio may not be decoded into Web Audio unless the stream is also “consumed” by a media element** (Chromium bug 933677 class of behavior).
+- **Workaround (now implemented in `bot-page/bot.js`):** for each remote receiver stream we attach a **muted `<audio>` element** and call `play()` to force decoding, then feed the same stream into `createMediaStreamSource()`. With this in place, `pre_mixer_max_abs` should become non-zero during speech.
+- **If it still stays 0:** then try **headed** mode (`BROWSER_HEADED=true`, with Xvfb on Linux if needed) as an environment fallback and re-check `pre_mixer_max_abs`.
+
+**If** `boundVia === "wrapper"` **or** the bound track id does **not** match `audio_inbound_track_identifier`:
+
+- The mixer is still attached to the wrong track or a wrapper. Ensure the latest bot-page code is deployed (receiver-track binding and rebind-by-mid), then run again.
 
 - **Check `rx_bytes`** in bot-page stats: it should **increase** while you speak (unmuted). If `rx_bytes` stays 0, the bot has no remote audio in the mixer.
 - **Check logs for `BOT_REMOTE_TRACK_ADDED`**: when the bot attaches a remote participant's audio to the mixer, it sends this event. If you never see it, either no remote track was found or you're the only participant.
