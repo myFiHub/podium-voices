@@ -65,7 +65,33 @@ function loadConfig() {
     const asrProvider = (getEnv("ASR_PROVIDER") || "openai");
     const llmProvider = (getEnv("MODEL_PROVIDER") || getEnv("LLM_PROVIDER") || "openai");
     const ttsProvider = (getEnv("TTS_PROVIDER") || "google");
+    const conversationBackendMode = (getEnv("CONVERSATION_BACKEND") || "asr-llm-tts");
     return {
+        conversationBackend: {
+            mode: conversationBackendMode,
+            personaplex: conversationBackendMode === "personaplex"
+                ? {
+                    serverUrl: getEnv("PERSONAPLEX_SERVER_URL") || "",
+                    voicePrompt: getEnv("PERSONAPLEX_VOICE_PROMPT") || "",
+                    sslInsecure: getEnv("PERSONAPLEX_SSL_INSECURE") === "true" || getEnv("PERSONAPLEX_SSL_INSECURE") === "1",
+                    seed: (() => {
+                        const v = getEnv("PERSONAPLEX_SEED");
+                        if (v == null || v === "")
+                            return undefined;
+                        const n = parseInt(v, 10);
+                        return Number.isNaN(n) ? undefined : n;
+                    })(),
+                    turnTimeoutMs: (() => {
+                        const v = getEnv("PERSONAPLEX_TURN_TIMEOUT_MS");
+                        if (v == null || v === "")
+                            return 30_000;
+                        const n = parseInt(v, 10);
+                        return Number.isNaN(n) || n <= 0 ? 30_000 : n;
+                    })(),
+                    fallbackToLlm: getEnv("PERSONAPLEX_FALLBACK_TO_LLM") === "true" || getEnv("PERSONAPLEX_FALLBACK_TO_LLM") === "1",
+                }
+                : undefined,
+        },
         asr: {
             provider: asrProvider,
             openaiApiKey: getEnv("OPENAI_API_KEY"),
@@ -166,6 +192,27 @@ function loadConfig() {
 function validateConfig(config) {
     const errors = [];
     const warnings = [];
+    // --- Conversation backend ---
+    if (config.conversationBackend.mode === "personaplex") {
+        const p = config.conversationBackend.personaplex;
+        if (!p) {
+            errors.push("CONVERSATION_BACKEND is set to 'personaplex' but PERSONAPLEX config is missing (unexpected).");
+        }
+        else {
+            if (!p.serverUrl?.trim()) {
+                errors.push("CONVERSATION_BACKEND is 'personaplex' but PERSONAPLEX_SERVER_URL is missing or empty in .env.local.");
+            }
+            if (!p.voicePrompt?.trim()) {
+                errors.push("CONVERSATION_BACKEND is 'personaplex' but PERSONAPLEX_VOICE_PROMPT is missing or empty in .env.local (e.g. NATF2.pt).");
+            }
+            if (p.sslInsecure) {
+                warnings.push("PERSONAPLEX_SSL_INSECURE is enabled. This disables TLS certificate verification for PersonaPlex connections and is unsafe for production.");
+            }
+            if (p.fallbackToLlm) {
+                warnings.push("PERSONAPLEX_FALLBACK_TO_LLM is enabled. Ensure ASR/LLM/TTS providers are correctly configured for fallback operation.");
+            }
+        }
+    }
     // --- Env file ---
     if (!fs.existsSync(envPath)) {
         warnings.push(`No .env.local found at ${envPath}. Using process.env only. Copy .env.example to .env.local and set values.`);

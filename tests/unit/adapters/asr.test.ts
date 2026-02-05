@@ -16,6 +16,7 @@ describe("StubASR", () => {
 describe("createASR", () => {
   it("returns StubASR when provider is stub", () => {
     const config: AppConfig = {
+      conversationBackend: { mode: "asr-llm-tts" },
       asr: { provider: "stub" },
       llm: { provider: "stub" },
       tts: { provider: "stub" },
@@ -29,6 +30,7 @@ describe("createASR", () => {
 
   it("returns StubASR when provider is openai but no api key", () => {
     const config: AppConfig = {
+      conversationBackend: { mode: "asr-llm-tts" },
       asr: { provider: "openai" },
       llm: { provider: "stub" },
       tts: { provider: "stub" },
@@ -42,6 +44,7 @@ describe("createASR", () => {
 
   it("returns WhisperLocalASR when provider is whisper-local", () => {
     const config: AppConfig = {
+      conversationBackend: { mode: "asr-llm-tts" },
       asr: { provider: "whisper-local", whisperModel: "base", whisperEngine: "faster-whisper" },
       llm: { provider: "stub" },
       tts: { provider: "stub" },

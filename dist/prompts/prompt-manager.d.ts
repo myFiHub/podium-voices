@@ -37,5 +37,12 @@ export declare class PromptManager {
     private readonly feedbackContextBuilder;
     constructor(cfg?: PromptManagerConfig);
     buildMessages(args: BuildPromptArgs): Message[];
+    /**
+     * Build a single text prompt string for PersonaPlex.
+     *
+     * PersonaPlex expects a single `text_prompt` string (with system-tag spacing handled by client).
+     * We keep it compact: system prompt + feedback + recent turns in a simple transcript format.
+     */
+    buildPersonaPlexTextPrompt(args: BuildPromptArgs): string;
 }
 //# sourceMappingURL=prompt-manager.d.ts.map

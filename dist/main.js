@@ -20,6 +20,7 @@ const live_state_1 = require("./room/live-state");
 const prompt_manager_1 = require("./prompts/prompt-manager");
 const persona_1 = require("./prompts/persona");
 const client_2 = require("./coordinator/client");
+const personaplex_1 = require("./adapters/personaplex");
 async function main() {
     const config = (0, config_1.loadConfig)();
     const validation = (0, config_1.validateConfig)(config);
@@ -53,6 +54,15 @@ async function main() {
             displayName: config.agent.agentDisplayName ?? config.agent.agentId,
         })
         : undefined;
+    const personaplexClient = config.conversationBackend.mode === "personaplex" && config.conversationBackend.personaplex
+        ? new personaplex_1.PersonaPlexClient({
+            serverUrl: config.conversationBackend.personaplex.serverUrl,
+            voicePrompt: config.conversationBackend.personaplex.voicePrompt,
+            sslInsecure: config.conversationBackend.personaplex.sslInsecure,
+            seed: config.conversationBackend.personaplex.seed,
+            turnTimeoutMs: config.conversationBackend.personaplex.turnTimeoutMs,
+        })
+        : undefined;
     let ttsSink = () => { };
     let speakingController = null;
     let liveState = null;
@@ -65,6 +75,9 @@ async function main() {
         vadSilenceMs: config.pipeline.vadSilenceMs,
         vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
         vadAggressiveness: config.pipeline.vadAggressiveness,
+        conversationBackendMode: config.conversationBackend.mode,
+        personaplexClient,
+        personaplexFallbackToLlm: Boolean(config.conversationBackend.personaplex?.fallbackToLlm),
         getFeedbackSentiment: () => feedbackCollector.getSentiment(),
         getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
         promptManager,

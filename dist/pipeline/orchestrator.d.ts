@@ -5,6 +5,7 @@
 import type { IASR } from "../adapters/asr";
 import type { ILLM } from "../adapters/llm";
 import type { ITTS } from "../adapters/tts";
+import type { PersonaPlexClient } from "../adapters/personaplex";
 import type { ISessionMemory } from "../memory/types";
 import type { ICoordinatorClient } from "../coordinator/client";
 import type { PipelineCallbacks } from "./types";
@@ -16,6 +17,12 @@ export interface OrchestratorConfig {
     vadEnergyThreshold?: number;
     /** WebRTC VAD aggressiveness 0–3 (only when webrtcvad native module is used). */
     vadAggressiveness?: number;
+    /** Conversation backend: default ASR+LLM+TTS, or PersonaPlex speech-to-speech. */
+    conversationBackendMode?: "asr-llm-tts" | "personaplex";
+    /** PersonaPlex client used when conversationBackendMode === 'personaplex'. */
+    personaplexClient?: PersonaPlexClient;
+    /** If true, fall back to ASR+LLM+TTS when PersonaPlex fails. */
+    personaplexFallbackToLlm?: boolean;
     /** Feedback sentiment for this turn (cheer | boo | neutral). */
     getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
     /** Threshold-derived feedback behavior level for this turn (high_positive..high_negative). */
@@ -54,6 +61,9 @@ export declare class Orchestrator {
     private readonly safety;
     private readonly timeouts;
     private readonly coordinatorClient?;
+    private readonly backendMode;
+    private readonly personaplexClient?;
+    private readonly personaplexFallbackToLlm;
     constructor(asr: IASR, llm: ILLM, tts: ITTS, memory: ISessionMemory, config: OrchestratorConfig, callbacks?: PipelineCallbacks);
     /**
      * Push raw audio (16kHz mono 16-bit PCM for VAD). Call repeatedly with chunks.
@@ -64,6 +74,7 @@ export declare class Orchestrator {
     private startTurnFromTranscript;
     private maybeRunPendingTurn;
     private runTurn;
+    private runTurnPersonaPlex;
     private runTurnCore;
     /**
      * Generate and speak a storyteller-style opener using the LLM (no user input required).

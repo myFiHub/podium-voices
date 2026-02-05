@@ -14,8 +14,28 @@ loadEnv({ path: envPath });
 export type AsrProvider = "openai" | "whisper-local" | "stub";
 export type LlmProvider = "openai" | "anthropic" | "stub";
 export type TtsProvider = "google" | "azure" | "stub";
+export type ConversationBackendMode = "asr-llm-tts" | "personaplex";
 
 export interface AppConfig {
+  /** Which conversation backend to use: default discrete pipeline, or PersonaPlex speech-to-speech. */
+  conversationBackend: {
+    mode: ConversationBackendMode;
+    personaplex?: {
+      /** Base URL of PersonaPlex server, e.g. https://localhost:8998 */
+      serverUrl: string;
+      /** Voice prompt filename expected by PersonaPlex server, e.g. NATF2.pt */
+      voicePrompt: string;
+      /** Allow self-signed certs (dev only). Do NOT enable in production. */
+      sslInsecure?: boolean;
+      /** Optional deterministic seed. */
+      seed?: number;
+      /** Turn timeout (ms) covering connect + stream + response. */
+      turnTimeoutMs: number;
+      /** Optional: fall back to ASR+LLM+TTS if PersonaPlex fails. */
+      fallbackToLlm?: boolean;
+    };
+  };
+
   /** ASR (speech-to-text) provider and options */
   asr: {
     provider: AsrProvider;
@@ -132,8 +152,33 @@ export function loadConfig(): AppConfig {
   const asrProvider = (getEnv("ASR_PROVIDER") || "openai") as AsrProvider;
   const llmProvider = (getEnv("MODEL_PROVIDER") || getEnv("LLM_PROVIDER") || "openai") as LlmProvider;
   const ttsProvider = (getEnv("TTS_PROVIDER") || "google") as TtsProvider;
+  const conversationBackendMode = (getEnv("CONVERSATION_BACKEND") || "asr-llm-tts") as ConversationBackendMode;
 
   return {
+    conversationBackend: {
+      mode: conversationBackendMode,
+      personaplex:
+        conversationBackendMode === "personaplex"
+          ? {
+              serverUrl: getEnv("PERSONAPLEX_SERVER_URL") || "",
+              voicePrompt: getEnv("PERSONAPLEX_VOICE_PROMPT") || "",
+              sslInsecure: getEnv("PERSONAPLEX_SSL_INSECURE") === "true" || getEnv("PERSONAPLEX_SSL_INSECURE") === "1",
+              seed: (() => {
+                const v = getEnv("PERSONAPLEX_SEED");
+                if (v == null || v === "") return undefined;
+                const n = parseInt(v, 10);
+                return Number.isNaN(n) ? undefined : n;
+              })(),
+              turnTimeoutMs: (() => {
+                const v = getEnv("PERSONAPLEX_TURN_TIMEOUT_MS");
+                if (v == null || v === "") return 30_000;
+                const n = parseInt(v, 10);
+                return Number.isNaN(n) || n <= 0 ? 30_000 : n;
+              })(),
+              fallbackToLlm: getEnv("PERSONAPLEX_FALLBACK_TO_LLM") === "true" || getEnv("PERSONAPLEX_FALLBACK_TO_LLM") === "1",
+            }
+          : undefined,
+    },
     asr: {
       provider: asrProvider,
       openaiApiKey: getEnv("OPENAI_API_KEY"),
@@ -235,6 +280,27 @@ export interface ConfigValidationResult {
 export function validateConfig(config: AppConfig): ConfigValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  // --- Conversation backend ---
+  if (config.conversationBackend.mode === "personaplex") {
+    const p = config.conversationBackend.personaplex;
+    if (!p) {
+      errors.push("CONVERSATION_BACKEND is set to 'personaplex' but PERSONAPLEX config is missing (unexpected).");
+    } else {
+      if (!p.serverUrl?.trim()) {
+        errors.push("CONVERSATION_BACKEND is 'personaplex' but PERSONAPLEX_SERVER_URL is missing or empty in .env.local.");
+      }
+      if (!p.voicePrompt?.trim()) {
+        errors.push("CONVERSATION_BACKEND is 'personaplex' but PERSONAPLEX_VOICE_PROMPT is missing or empty in .env.local (e.g. NATF2.pt).");
+      }
+      if (p.sslInsecure) {
+        warnings.push("PERSONAPLEX_SSL_INSECURE is enabled. This disables TLS certificate verification for PersonaPlex connections and is unsafe for production.");
+      }
+      if (p.fallbackToLlm) {
+        warnings.push("PERSONAPLEX_FALLBACK_TO_LLM is enabled. Ensure ASR/LLM/TTS providers are correctly configured for fallback operation.");
+      }
+    }
+  }
 
   // --- Env file ---
   if (!fs.existsSync(envPath)) {

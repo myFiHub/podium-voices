@@ -6,6 +6,7 @@
 import type { IASR } from "../adapters/asr";
 import type { ILLM, Message } from "../adapters/llm";
 import type { ITTS } from "../adapters/tts";
+import type { PersonaPlexClient } from "../adapters/personaplex";
 import type { ISessionMemory } from "../memory/types";
 import type { ICoordinatorClient } from "../coordinator/client";
 import type { PipelineCallbacks } from "./types";
@@ -33,6 +34,12 @@ export interface OrchestratorConfig {
   vadEnergyThreshold?: number;
   /** WebRTC VAD aggressiveness 0–3 (only when webrtcvad native module is used). */
   vadAggressiveness?: number;
+  /** Conversation backend: default ASR+LLM+TTS, or PersonaPlex speech-to-speech. */
+  conversationBackendMode?: "asr-llm-tts" | "personaplex";
+  /** PersonaPlex client used when conversationBackendMode === 'personaplex'. */
+  personaplexClient?: PersonaPlexClient;
+  /** If true, fall back to ASR+LLM+TTS when PersonaPlex fails. */
+  personaplexFallbackToLlm?: boolean;
   /** Feedback sentiment for this turn (cheer | boo | neutral). */
   getFeedbackSentiment?: () => "cheer" | "boo" | "neutral";
   /** Threshold-derived feedback behavior level for this turn (high_positive..high_negative). */
@@ -63,6 +70,9 @@ export class Orchestrator {
   private readonly safety: SafetyGate;
   private readonly timeouts: { asrMs: number; llmMs: number };
   private readonly coordinatorClient?: ICoordinatorClient;
+  private readonly backendMode: "asr-llm-tts" | "personaplex";
+  private readonly personaplexClient?: PersonaPlexClient;
+  private readonly personaplexFallbackToLlm: boolean;
 
   constructor(
     private readonly asr: IASR,
@@ -86,6 +96,9 @@ export class Orchestrator {
       llmMs: config.timeouts?.llmMs ?? DEFAULT_LLM_TIMEOUT_MS,
     };
     this.coordinatorClient = config.coordinatorClient;
+    this.backendMode = config.conversationBackendMode ?? "asr-llm-tts";
+    this.personaplexClient = config.personaplexClient;
+    this.personaplexFallbackToLlm = Boolean(config.personaplexFallbackToLlm);
   }
 
   /**
@@ -205,6 +218,11 @@ export class Orchestrator {
   }
 
   private async runTurn(audioSegment: Buffer): Promise<void> {
+    if (this.backendMode === "personaplex") {
+      await this.runTurnPersonaPlex(audioSegment);
+      return;
+    }
+
     const turnStart = Date.now();
     const wavBuffer = pcmToWav(audioSegment, VAD.getSampleRate());
     const asrStart = Date.now();
@@ -217,6 +235,135 @@ export class Orchestrator {
     }
     const asrLatencyMs = Date.now() - asrStart;
     await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart });
+  }
+
+  private async runTurnPersonaPlex(audioSegment: Buffer): Promise<void> {
+    if (!this.personaplexClient) {
+      logger.error({ event: "PERSONAPLEX_MISSING_CLIENT" }, "Conversation backend is 'personaplex' but no PersonaPlex client was provided.");
+      return;
+    }
+
+    const turnStart = Date.now();
+
+    // We still run ASR to maintain memory/coordinator behavior and to build a richer prompt.
+    const wavBuffer = pcmToWav(audioSegment, VAD.getSampleRate());
+    const asrStart = Date.now();
+    let transcriptResult: { text: string; language?: string; words?: Array<{ word: string; start: number; end: number }> };
+    try {
+      transcriptResult = await withTimeout(this.asr.transcribe(wavBuffer, "wav"), this.timeouts.asrMs, "ASR");
+    } catch (err) {
+      logger.warn({ event: "ASR_FAILED", err: (err as Error).message }, "ASR failed (PersonaPlex mode)");
+      transcriptResult = { text: "" };
+    }
+    const asrLatencyMs = Date.now() - asrStart;
+
+    const userTextRaw = (transcriptResult.text || "").trim();
+    const userSafe = this.safety.sanitizeUserTranscript(userTextRaw);
+    if (!userSafe.allowed) return;
+    if (userSafe.text.length > 0) {
+      this.callbacks.onUserTranscript?.(userSafe.text);
+    }
+
+    if (this.coordinatorClient && userSafe.text.length > 0) {
+      const turns = await this.coordinatorClient.syncRecentTurns();
+      const flatTurns: Array<{ role: "user" | "assistant"; content: string }> = [];
+      for (const t of turns) {
+        flatTurns.push({ role: "user", content: t.user });
+        flatTurns.push({ role: "assistant", content: t.assistant });
+      }
+      if (typeof this.memory.replaceTurns === "function") {
+        this.memory.replaceTurns(flatTurns);
+      }
+      const allowed = await this.coordinatorClient.requestTurn(userSafe.text);
+      if (!allowed) return;
+    }
+
+    if (userSafe.text.length > 0) {
+      this.memory.append("user", userSafe.text);
+    }
+    const snapshot = this.memory.getSnapshot();
+    const feedbackSentiment = this.getFeedbackSentiment();
+    const feedbackBehaviorLevel = this.getFeedbackBehaviorLevel();
+
+    const textPrompt = this.promptManager.buildPersonaPlexTextPrompt({
+      mode: "reply",
+      snapshot,
+      sentiment: feedbackSentiment,
+      behaviorLevel: feedbackBehaviorLevel,
+    });
+
+    // Allow receiving audio while speaking so barge-in can be detected.
+    this.processing = false;
+    this.speaking = true;
+    this.cancelTts = false;
+
+    const utteranceId = `personaplex-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let firstAudioAt: number | undefined;
+    let started = false;
+
+    const ppStart = Date.now();
+    try {
+      const turn = await this.personaplexClient.runTurn({ userPcm16k: audioSegment, textPrompt });
+      for await (const buf of turn.audio48k) {
+        if (this.cancelTts) {
+          // Barge-in: abort remote generation quickly.
+          turn.abort();
+          break;
+        }
+        if (buf.length === 0) continue;
+        if (!started) {
+          started = true;
+          firstAudioAt = Date.now();
+          this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: 0 });
+        }
+        this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
+      }
+      if (started) this.callbacks.onTtsEnd?.({ utteranceId, source: "turn" });
+
+      // Best-effort: capture the text token stream and store it as the assistant turn.
+      let assistantText = "";
+      try {
+        assistantText = (await turn.text).trim();
+      } catch (err) {
+        logger.warn({ event: "PERSONAPLEX_TEXT_FAILED", err: (err as Error).message }, "PersonaPlex text stream failed");
+      }
+
+      const assistantSafe = this.safety.sanitizeAssistantReply(assistantText);
+      if (assistantSafe.allowed && assistantSafe.text.trim().length > 0) {
+        this.memory.append("assistant", assistantSafe.text);
+        this.callbacks.onAgentReply?.(assistantSafe.text);
+        if (this.coordinatorClient && userSafe.text.length > 0) {
+          await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
+        }
+      } else {
+        // Still end coordinator turn if we were allowed to speak; use empty assistant.
+        if (this.coordinatorClient && userSafe.text.length > 0) {
+          await this.coordinatorClient.endTurn(userSafe.text, "");
+        }
+      }
+    } catch (err) {
+      logger.warn({ event: "PERSONAPLEX_FAILED", err: (err as Error).message }, "PersonaPlex turn failed");
+      if (this.personaplexFallbackToLlm) {
+        logger.info({ event: "PERSONAPLEX_FALLBACK_TO_LLM" }, "Falling back to ASR+LLM+TTS for this turn");
+        // If we have a usable transcript, fall back to the standard path without re-transcribing.
+        await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart });
+        return;
+      }
+    } finally {
+      this.speaking = false;
+    }
+
+    const personaplexLatencyMs = Date.now() - ppStart;
+    const endOfUserSpeechToBotAudioMs = firstAudioAt !== undefined ? firstAudioAt - turnStart : undefined;
+    recordTurnMetrics({
+      asrLatencyMs,
+      // Map PersonaPlex response time to the existing metrics fields.
+      llmLatencyMs: firstAudioAt !== undefined ? firstAudioAt - ppStart : personaplexLatencyMs,
+      ttsLatencyMs: personaplexLatencyMs,
+      endOfUserSpeechToBotAudioMs,
+    });
+
+    await this.maybeRunPendingTurn();
   }
 
   private async runTurnCore(args: {

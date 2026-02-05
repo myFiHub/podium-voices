@@ -2,6 +2,13 @@
 
 Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins the room using the configured token (permission is enforced by the Podium API), transcribes live speech (ASR), generates responses with an LLM, and speaks via TTS. The pipeline is **modular**: ASR, LLM, and TTS can be swapped via config (e.g. OpenAI now, self-hosted later).
 
+## PersonaPlex mode (optional)
+
+This repo can optionally use **[NVIDIA PersonaPlex](https://github.com/NVIDIA/personaplex)** as a speech-to-speech conversation backend (instead of the default ASR → LLM → TTS chain).
+
+- **What changes**: Podium-voices still does VAD and (optionally) ASR for session memory/coordinator behavior, but **PersonaPlex generates the spoken response audio** via its `/api/chat` WebSocket API.
+- **Setup**: See [docs/PERSONAPLEX_SETUP.md](docs/PERSONAPLEX_SETUP.md) for installing and running the PersonaPlex server (Python, HF_TOKEN, libopus-dev).
+
 ## Architecture
 
 - **Pipeline**: Audio → VAD → ASR → Session Memory + Feedback → LLM → TTS → Audio out.
@@ -25,6 +32,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
    Copy `.env.example` to `.env.local` and set:
 
+   - **Conversation backend (optional)**: Set `CONVERSATION_BACKEND=personaplex` and configure `PERSONAPLEX_SERVER_URL` + `PERSONAPLEX_VOICE_PROMPT`. For dev self-signed certs, set `PERSONAPLEX_SSL_INSECURE=true` (unsafe for production).
    - **OpenAI**: `OPENAI_API_KEY` (for Whisper ASR and GPT-4/3.5).
    - **TTS**: `Google_Cloud_TTS_API_KEY` (or Azure TTS vars if using Azure).
    - **Podium** (optional for mock): `NEXT_PUBLIC_PODIUM_API_URL`, `NEXT_PUBLIC_WEBSOCKET_ADDRESS`, `NEXT_PUBLIC_OUTPOST_SERVER`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`.

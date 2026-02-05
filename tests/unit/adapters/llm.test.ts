@@ -16,6 +16,7 @@ describe("StubLLM", () => {
 describe("createLLM", () => {
   it("returns StubLLM when provider is stub", () => {
     const config: AppConfig = {
+      conversationBackend: { mode: "asr-llm-tts" },
       asr: { provider: "stub" },
       llm: { provider: "stub" },
       tts: { provider: "stub" },

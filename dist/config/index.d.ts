@@ -5,7 +5,26 @@
 export type AsrProvider = "openai" | "whisper-local" | "stub";
 export type LlmProvider = "openai" | "anthropic" | "stub";
 export type TtsProvider = "google" | "azure" | "stub";
+export type ConversationBackendMode = "asr-llm-tts" | "personaplex";
 export interface AppConfig {
+    /** Which conversation backend to use: default discrete pipeline, or PersonaPlex speech-to-speech. */
+    conversationBackend: {
+        mode: ConversationBackendMode;
+        personaplex?: {
+            /** Base URL of PersonaPlex server, e.g. https://localhost:8998 */
+            serverUrl: string;
+            /** Voice prompt filename expected by PersonaPlex server, e.g. NATF2.pt */
+            voicePrompt: string;
+            /** Allow self-signed certs (dev only). Do NOT enable in production. */
+            sslInsecure?: boolean;
+            /** Optional deterministic seed. */
+            seed?: number;
+            /** Turn timeout (ms) covering connect + stream + response. */
+            turnTimeoutMs: number;
+            /** Optional: fall back to ASR+LLM+TTS if PersonaPlex fails. */
+            fallbackToLlm?: boolean;
+        };
+    };
     /** ASR (speech-to-text) provider and options */
     asr: {
         provider: AsrProvider;

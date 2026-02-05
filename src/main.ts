@@ -19,6 +19,7 @@ import { LiveState } from "./room/live-state";
 import { PromptManager } from "./prompts/prompt-manager";
 import { getPersona } from "./prompts/persona";
 import { CoordinatorClient } from "./coordinator/client";
+import { PersonaPlexClient } from "./adapters/personaplex";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -59,6 +60,17 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  const personaplexClient =
+    config.conversationBackend.mode === "personaplex" && config.conversationBackend.personaplex
+      ? new PersonaPlexClient({
+          serverUrl: config.conversationBackend.personaplex.serverUrl,
+          voicePrompt: config.conversationBackend.personaplex.voicePrompt,
+          sslInsecure: config.conversationBackend.personaplex.sslInsecure,
+          seed: config.conversationBackend.personaplex.seed,
+          turnTimeoutMs: config.conversationBackend.personaplex.turnTimeoutMs,
+        })
+      : undefined;
+
   let ttsSink: (buffer: Buffer) => void = () => {};
   let speakingController: SpeakingController | null = null;
   let liveState: LiveState | null = null;
@@ -72,6 +84,9 @@ async function main(): Promise<void> {
     vadSilenceMs: config.pipeline.vadSilenceMs,
     vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
     vadAggressiveness: config.pipeline.vadAggressiveness,
+    conversationBackendMode: config.conversationBackend.mode,
+    personaplexClient,
+    personaplexFallbackToLlm: Boolean(config.conversationBackend.personaplex?.fallbackToLlm),
     getFeedbackSentiment: () => feedbackCollector.getSentiment(),
     getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
     promptManager,

@@ -81,5 +81,48 @@ export class PromptManager {
       ...historyMessages.map((m) => ({ role: m.role, content: m.content })),
     ];
   }
+
+  /**
+   * Build a single text prompt string for PersonaPlex.
+   *
+   * PersonaPlex expects a single `text_prompt` string (with system-tag spacing handled by client).
+   * We keep it compact: system prompt + feedback + recent turns in a simple transcript format.
+   */
+  buildPersonaPlexTextPrompt(args: BuildPromptArgs): string {
+    const feedbackLine = this.feedbackContextBuilder({
+      sentiment: args.sentiment,
+      behaviorLevel: args.behaviorLevel,
+      lastMinute: true,
+    });
+
+    const lines: string[] = [];
+    if (args.mode === "opener") {
+      const topic = (args.topicSeed || "").trim();
+      const outpostContext = (args.outpostContext || "").trim();
+      if (topic) lines.push(`Topic seed: ${topic}`);
+      if (outpostContext) lines.push(`Room context: ${outpostContext}`);
+      lines.push(
+        "Task: Begin the room conversation like a master storyteller. Set a vivid scene, connect it to the topic, keep it under ~20 seconds, and end with a friendly question inviting someone to respond."
+      );
+      return [
+        [this.systemPrompt, this.storytellerAddendum].join("\n\n"),
+        feedbackLine,
+        // Keep any prior conversation context if present.
+        ...args.snapshot.turns.map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.content}`),
+        lines.join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+
+    // reply mode
+    return [
+      this.systemPrompt,
+      feedbackLine,
+      ...args.snapshot.turns.map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.content}`),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
 }
 

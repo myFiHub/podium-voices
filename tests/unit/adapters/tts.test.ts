@@ -29,6 +29,7 @@ describe("ttsToStream", () => {
 describe("createTTS", () => {
   it("returns StubTTS when provider is stub", () => {
     const config: AppConfig = {
+      conversationBackend: { mode: "asr-llm-tts" },
       asr: { provider: "stub" },
       llm: { provider: "stub" },
       tts: { provider: "stub" },
