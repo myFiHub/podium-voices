@@ -45,6 +45,7 @@ export declare class Orchestrator {
     private speaking;
     private cancelTts;
     private pendingSegment;
+    private activeStreamingSession;
     /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
     private vadSpeechLogged;
     private readonly getFeedbackSentiment;
@@ -60,8 +61,10 @@ export declare class Orchestrator {
      */
     pushAudio(chunk: Buffer): Promise<void>;
     private startTurn;
+    private startTurnFromTranscript;
     private maybeRunPendingTurn;
     private runTurn;
+    private runTurnCore;
     /**
      * Generate and speak a storyteller-style opener using the LLM (no user input required).
      * This is intended to run once after join (or on-demand).

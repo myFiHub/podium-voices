@@ -69,6 +69,9 @@ function loadConfig() {
         asr: {
             provider: asrProvider,
             openaiApiKey: getEnv("OPENAI_API_KEY"),
+            whisperModel: getEnv("WHISPER_MODEL") || "base",
+            whisperEngine: getEnv("WHISPER_ENGINE") || "faster-whisper",
+            whisperPythonPath: getEnv("WHISPER_PYTHON_PATH"),
         },
         llm: {
             provider: llmProvider,
@@ -170,6 +173,16 @@ function validateConfig(config) {
     // --- ASR ---
     if (config.asr.provider === "openai" && !config.asr.openaiApiKey?.trim()) {
         errors.push("ASR is set to 'openai' but OPENAI_API_KEY is missing or empty in .env.local. Speech-to-text will use stub (no transcription).");
+    }
+    if (config.asr.provider === "whisper-local") {
+        // Local Whisper is intentionally permissive: operators may choose any model/engine they have installed.
+        // We surface likely misconfiguration as warnings, not errors, so the app can still boot (and fall back to stub in factory if needed).
+        if (!config.asr.whisperModel?.trim()) {
+            warnings.push("ASR is set to 'whisper-local' but WHISPER_MODEL is empty. Defaulting to 'base'.");
+        }
+        if (!config.asr.whisperEngine?.trim()) {
+            warnings.push("ASR is set to 'whisper-local' but WHISPER_ENGINE is empty. Defaulting to 'faster-whisper'.");
+        }
     }
     // --- LLM ---
     if (config.llm.provider === "openai" && !config.llm.openaiApiKey?.trim()) {

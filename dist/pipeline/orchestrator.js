@@ -33,6 +33,7 @@ class Orchestrator {
     speaking = false;
     cancelTts = false;
     pendingSegment = null;
+    activeStreamingSession = null;
     /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
     vadSpeechLogged = false;
     getFeedbackSentiment;
@@ -71,6 +72,17 @@ class Orchestrator {
         if (this.processing)
             return;
         this.audioBuffer.push(chunk);
+        // If we already have an active streaming session for the current utterance,
+        // push the new chunk immediately (chunk boundaries are preserved).
+        if (!this.speaking && this.activeStreamingSession) {
+            try {
+                this.activeStreamingSession.push(chunk);
+            }
+            catch (err) {
+                logging_1.logger.warn({ event: "ASR_STREAM_PUSH_FAILED", err: err.message }, "Streaming ASR push failed; will fall back to batch at end-of-turn");
+                this.activeStreamingSession = null;
+            }
+        }
         const combined = Buffer.concat(this.audioBuffer);
         const frameSize = vad_1.VAD.getFrameSizeBytes();
         let offset = 0;
@@ -81,6 +93,21 @@ class Orchestrator {
             if (result.isSpeech && !this.vadSpeechLogged) {
                 this.vadSpeechLogged = true;
                 logging_1.logger.debug({ event: "VAD_SPEECH_STARTED" }, "VAD: first speech in run (audio level above threshold)");
+                // Start a streaming session on first detected speech if the adapter supports it.
+                // Do not start streaming while speaking; queued/barge-in segments remain batch-only in MVP.
+                if (!this.speaking && !this.activeStreamingSession && typeof this.asr.createStreamingSession === "function") {
+                    try {
+                        this.activeStreamingSession = this.asr.createStreamingSession({ sampleRateHz: vad_1.VAD.getSampleRate() });
+                        // Push all buffered audio so far so the beginning of speech is included.
+                        // This may include some leading silence, which is acceptable for MVP.
+                        this.activeStreamingSession.push(combined);
+                        logging_1.logger.info({ event: "ASR_STREAM_SESSION_STARTED" }, "Streaming ASR session started");
+                    }
+                    catch (err) {
+                        logging_1.logger.warn({ event: "ASR_STREAM_SESSION_START_FAILED", err: err.message }, "Failed to start streaming ASR session; will use batch ASR");
+                        this.activeStreamingSession = null;
+                    }
+                }
             }
             // Barge-in: if user speech is detected while bot is speaking, cancel TTS immediately.
             if (this.speaking && result.isSpeech && !this.cancelTts) {
@@ -97,6 +124,22 @@ class Orchestrator {
                     this.pendingSegment = result.segment;
                     return;
                 }
+                // Prefer streaming ASR finalization if we have a session; otherwise, use batch ASR on the segment.
+                if (this.activeStreamingSession) {
+                    const session = this.activeStreamingSession;
+                    this.activeStreamingSession = null;
+                    const asrStart = Date.now();
+                    try {
+                        const transcriptResult = await withTimeout(session.end(), this.timeouts.asrMs, "ASR(stream)");
+                        const asrLatencyMs = Date.now() - asrStart;
+                        await this.startTurnFromTranscript(transcriptResult, asrLatencyMs);
+                        return;
+                    }
+                    catch (err) {
+                        logging_1.logger.warn({ event: "ASR_STREAM_END_FAILED", err: err.message }, "Streaming ASR failed at end(); falling back to batch ASR");
+                        // Fall through to batch.
+                    }
+                }
                 await this.startTurn(result.segment);
                 return;
             }
@@ -109,6 +152,18 @@ class Orchestrator {
         this.processing = true;
         try {
             await this.runTurn(segment);
+        }
+        finally {
+            this.processing = false;
+        }
+        await this.maybeRunPendingTurn();
+    }
+    async startTurnFromTranscript(transcriptResult, asrLatencyMs) {
+        if (this.processing)
+            return;
+        this.processing = true;
+        try {
+            await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart: Date.now() });
         }
         finally {
             this.processing = false;
@@ -136,6 +191,10 @@ class Orchestrator {
             return;
         }
         const asrLatencyMs = Date.now() - asrStart;
+        await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart });
+    }
+    async runTurnCore(args) {
+        const { transcriptResult, asrLatencyMs, turnStart } = args;
         const userTextRaw = (transcriptResult.text || "").trim();
         const userSafe = this.safety.sanitizeUserTranscript(userTextRaw);
         if (!userSafe.allowed || userSafe.text.length === 0)

@@ -1,6 +1,6 @@
 # Podium Voices – AI Co-Host MVP
 
-Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins as a host (creator or cohost), transcribes live speech (ASR), generates responses with an LLM, and speaks via TTS. The pipeline is **modular**: ASR, LLM, and TTS can be swapped via config (e.g. OpenAI now, self-hosted later).
+Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins the room using the configured token (permission is enforced by the Podium API), transcribes live speech (ASR), generates responses with an LLM, and speaks via TTS. The pipeline is **modular**: ASR, LLM, and TTS can be swapped via config (e.g. OpenAI now, self-hosted later).
 
 ## Architecture
 
@@ -32,7 +32,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
    - **Audio debug (optional)**: `DEBUG_AUDIO_FRAMES=1` enables per-frame integrity checks across the Node↔browser bridge. `SAVE_TTS_WAV=1` captures short WAVs for inspecting the TTS audio at different pipeline boundaries (saved under `debug-audio/`). **`BOT_DIAG=1`** runs a 20s diagnostic capture, writes `./logs/diag/*_stats.jsonl`, prints a verdict, then exits—use only when debugging receive/audio issues; **omit or remove it for normal long-running use** (see [Response latency and tuning](#response-latency-and-tuning) and [docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md)).
    - **Opener / greeting** (optional): If `GREETING_TEXT` is non-empty, the bot will speak it after `GREETING_DELAY_MS`. Otherwise, if `OPENER_ENABLED=true`, the bot will generate a short storyteller-style opener (LLM) after `OPENER_DELAY_MS` (guided by `TOPIC_SEED` and outpost metadata).
 
-   The agent must be **creator or cohost** of the outpost (see [podium interface considerations.md](podium%20interface%20considerations.md)). For real audio in/out, set `USE_JITSI_BOT=true` and ensure Playwright Chromium is installed (`npx playwright install chromium`).
+   The agent can join any room the token has permission to join (the Podium backend enforces this; creator/cohost still get unlimited speaking time where applicable). For real audio in/out, set `USE_JITSI_BOT=true` and ensure Playwright Chromium is installed (`npx playwright install chromium`).
 
 3. **Build and run**
 
@@ -55,16 +55,18 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 - **Starting the dialogue**: When the bot joins the room, it either speaks a fixed **greeting** (`GREETING_TEXT`) or generates a storyteller-style **opener** (LLM) if `OPENER_ENABLED=true` and `GREETING_TEXT` is empty. Use `TOPIC_SEED` to steer the opener.
 - **Responding to you**: The bot listens to **remote audio** (your mic) and replies after you finish speaking (VAD detects silence). For the bot to hear you, **unmute your microphone** in the meeting. If the bot never responds, check that your client is not muting outgoing audio and that the bot process logs show incoming audio (e.g. `USER_TRANSCRIPT` after you talk).
+- **Natural / influencer-style voice**: To reduce stilted or corporate-sounding replies, set **`PERSONA_ID=influencer`** in `.env.local`. The base prompt also includes speaking-style guidance (react to what was said, vary rhythm, natural transitions) so even `default` should sound more like a real host. For a stronger podcast/influencer vibe (e.g. mix of Obama/Rogan or Harris/Alex Cooper–style warmth and directness), use **`influencer`**.
 
 ## Config
 
-- **ASR_PROVIDER**: `openai` (Whisper API) or `stub`.
+- **ASR_PROVIDER**: `openai` (Whisper API), `whisper-local` (server-local/self-hosted Whisper), or `stub`.
+  - For `whisper-local`: set `WHISPER_MODEL` (e.g. `base`, `small`), optional `WHISPER_ENGINE` (default `faster-whisper`), optional `WHISPER_PYTHON_PATH` (defaults to `python3`).
 - **MODEL_PROVIDER** / **LLM_PROVIDER**: `openai`, `anthropic`, or `stub`.
 - **TTS_PROVIDER**: `google`, `azure`, or `stub`.
 - **Pipeline**: `VAD_SILENCE_MS`, `MAX_TURNS_IN_MEMORY`; `GREETING_TEXT`, `GREETING_DELAY_MS`; `OPENER_ENABLED`, `OPENER_DELAY_MS`, `OPENER_MAX_TOKENS`, `TOPIC_SEED`.
 - **Podium**: `NEXT_PUBLIC_*`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`; **USE_JITSI_BOT** (`true` = browser bot for real Jitsi audio); **BOT_PAGE_URL** (optional; default = Node serves `bot-page/` on the bridge port, starting at 8766).
 - **Agent / persona / feedback**:
-  - **`PERSONA_ID`**: `default` | `hype` | `calm` (system prompt + feedback thresholds + optional feedback wording).
+  - **`PERSONA_ID`**: `default` | `hype` | `calm` | **`influencer`** (system prompt + feedback thresholds + optional feedback wording). Use **`influencer`** for a more natural, podcast/influencer-like voice (warmer, more direct, better flow).
   - **`FEEDBACK_REACT_TO_ADDRESS`**: filter which reactions are counted:
     - unset/empty = count all room reactions (room mood)
     - `self` = count only reactions targeting the bot’s wallet address

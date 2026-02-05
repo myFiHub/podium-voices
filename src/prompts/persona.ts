@@ -3,6 +3,14 @@ import { DEFAULT_FEEDBACK_THRESHOLDS } from "../feedback/types";
 import type { FeedbackContextBuilder } from "./prompt-manager";
 import { CO_HOST_SYSTEM_PROMPT, buildFeedbackContext } from "./co-host";
 
+/** Addendum for influencer/podcast-host style: warmth, rhetorical structure, candid and direct like a popular host. */
+const INFLUENCER_ADDENDUM = [
+  "Persona: You sound like a mix of a polished podcast host and a candid, engaging influencer.",
+  "Use warmth and conviction: clear point of view, occasional emphasis or repetition for effect ('That's the thing—' or 'And that matters.').",
+  "Be direct and conversational: ask real follow-up questions, react genuinely to what people say, and sometimes build to a short punchy conclusion.",
+  "Vary your openings: sometimes jump straight in, sometimes acknowledge the other person first. Avoid sounding scripted or samey.",
+].join(" ");
+
 export interface Persona {
   id: string;
   systemPrompt: string;
@@ -39,6 +47,13 @@ export const PERSONAS: Record<string, Persona> = {
       negative: { minBoos: 1, minDislikes: 2 },
       highNegative: { minBoos: 2, minDislikes: 4 },
     },
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+  },
+  /** Influencer/podcast style: natural flow, warmth, directness (e.g. Obama/Rogan, Harris/Alex Cooper vibe). */
+  influencer: {
+    id: "influencer",
+    systemPrompt: [CO_HOST_SYSTEM_PROMPT, INFLUENCER_ADDENDUM].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
     feedbackContextBuilder: (args) => buildFeedbackContext(args),
   },
 };

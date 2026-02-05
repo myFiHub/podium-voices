@@ -69,7 +69,7 @@ NEXT_PUBLIC_WEBSOCKET_ADDRESS – WebSocket URL.
 NEXT_PUBLIC_OUTPOST_SERVER – Jitsi hostname when outpost_host_url is not set.
 (Optional) NEXT_PUBLIC_WEBSITE_LINK_URL – cookie domain for token (e.g. login flow).
 Test user
-A real or test Podium user that is creator or cohost of at least one outpost (so no Luma/ticket/invite checks).
+A real or test Podium user with permission to join the target outpost (e.g. creator, cohost, or member as allowed by enter_type).
 You need: login credentials (or a way to get a token) and that user’s uuid / address.
 Test outpost
 uuid: target outpost id.
@@ -82,7 +82,7 @@ Option B: Use a long-lived or test token from your backend if available; same to
 Minimal test sequence
 Login → token + user.
 getOutpost(testOutpostUuid) → outpost.
-Assert creator or cohost so canEnter and canSpeak.
+Ensure user has permission to join (backend will reject addMeAsMember or join if not).
 Connect WebSocket with token.
 addMeAsMember(outpost.uuid) if needed.
 asyncJoin(outpost.uuid) and wait for join confirmation (or timeout).

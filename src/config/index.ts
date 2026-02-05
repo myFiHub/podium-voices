@@ -11,7 +11,7 @@ import { config as loadEnv } from "dotenv";
 const envPath = path.resolve(process.cwd(), ".env.local");
 loadEnv({ path: envPath });
 
-export type AsrProvider = "openai" | "stub";
+export type AsrProvider = "openai" | "whisper-local" | "stub";
 export type LlmProvider = "openai" | "anthropic" | "stub";
 export type TtsProvider = "google" | "azure" | "stub";
 
@@ -20,6 +20,12 @@ export interface AppConfig {
   asr: {
     provider: AsrProvider;
     openaiApiKey?: string;
+    /** Server-local Whisper model name or path (e.g. tiny|base|small). */
+    whisperModel?: string;
+    /** Local Whisper engine selector (e.g. faster-whisper | whisper-cpp). */
+    whisperEngine?: string;
+    /** Optional Python interpreter path for python-based engines (e.g. faster-whisper). */
+    whisperPythonPath?: string;
   };
 
   /** LLM provider and options */
@@ -131,6 +137,9 @@ export function loadConfig(): AppConfig {
     asr: {
       provider: asrProvider,
       openaiApiKey: getEnv("OPENAI_API_KEY"),
+      whisperModel: getEnv("WHISPER_MODEL") || "base",
+      whisperEngine: getEnv("WHISPER_ENGINE") || "faster-whisper",
+      whisperPythonPath: getEnv("WHISPER_PYTHON_PATH"),
     },
     llm: {
       provider: llmProvider,
@@ -235,6 +244,16 @@ export function validateConfig(config: AppConfig): ConfigValidationResult {
   // --- ASR ---
   if (config.asr.provider === "openai" && !config.asr.openaiApiKey?.trim()) {
     errors.push("ASR is set to 'openai' but OPENAI_API_KEY is missing or empty in .env.local. Speech-to-text will use stub (no transcription).");
+  }
+  if (config.asr.provider === "whisper-local") {
+    // Local Whisper is intentionally permissive: operators may choose any model/engine they have installed.
+    // We surface likely misconfiguration as warnings, not errors, so the app can still boot (and fall back to stub in factory if needed).
+    if (!config.asr.whisperModel?.trim()) {
+      warnings.push("ASR is set to 'whisper-local' but WHISPER_MODEL is empty. Defaulting to 'base'.");
+    }
+    if (!config.asr.whisperEngine?.trim()) {
+      warnings.push("ASR is set to 'whisper-local' but WHISPER_ENGINE is empty. Defaulting to 'faster-whisper'.");
+    }
   }
 
   // --- LLM ---

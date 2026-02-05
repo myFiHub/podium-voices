@@ -117,9 +117,11 @@ function scheduleFlush(requestId) {
     const bucket = pendingRequests.get(requestId);
     if (!bucket || bucket.timer)
         return;
-    bucket.timer = setTimeout(() => {
+    const timer = setTimeout(() => {
         flushRequest(requestId);
     }, COLLECTION_MS);
+    bucket.timer = timer;
+    timer.unref?.();
 }
 function parseJsonBody(req) {
     return new Promise((resolve, reject) => {

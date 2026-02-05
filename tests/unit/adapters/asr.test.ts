@@ -2,7 +2,7 @@
  * Unit tests for ASR adapters (stub and factory).
  */
 
-import { StubASR, createASR } from "../../../src/adapters/asr";
+import { StubASR, WhisperLocalASR, createASR } from "../../../src/adapters/asr";
 import type { AppConfig } from "../../../src/config";
 
 describe("StubASR", () => {
@@ -38,5 +38,18 @@ describe("createASR", () => {
     };
     const asr = createASR(config);
     expect(asr).toBeInstanceOf(StubASR);
+  });
+
+  it("returns WhisperLocalASR when provider is whisper-local", () => {
+    const config: AppConfig = {
+      asr: { provider: "whisper-local", whisperModel: "base", whisperEngine: "faster-whisper" },
+      llm: { provider: "stub" },
+      tts: { provider: "stub" },
+      podium: { apiUrl: "", wsAddress: "", outpostServer: "" },
+      pipeline: { vadSilenceMs: 500, maxTurnsInMemory: 50 },
+      agent: { personaId: "default" },
+    };
+    const asr = createASR(config);
+    expect(asr).toBeInstanceOf(WhisperLocalASR);
   });
 });

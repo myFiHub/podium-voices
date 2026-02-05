@@ -2,7 +2,7 @@
  * Env-based configuration for AI co-host MVP.
  * Load from .env.local (or process.env). Do not commit secrets.
  */
-export type AsrProvider = "openai" | "stub";
+export type AsrProvider = "openai" | "whisper-local" | "stub";
 export type LlmProvider = "openai" | "anthropic" | "stub";
 export type TtsProvider = "google" | "azure" | "stub";
 export interface AppConfig {
@@ -10,6 +10,12 @@ export interface AppConfig {
     asr: {
         provider: AsrProvider;
         openaiApiKey?: string;
+        /** Server-local Whisper model name or path (e.g. tiny|base|small). */
+        whisperModel?: string;
+        /** Local Whisper engine selector (e.g. faster-whisper | whisper-cpp). */
+        whisperEngine?: string;
+        /** Optional Python interpreter path for python-based engines (e.g. faster-whisper). */
+        whisperPythonPath?: string;
     };
     /** LLM provider and options */
     llm: {

@@ -72,13 +72,7 @@ export class RoomClient {
   async join(): Promise<{ user: User; outpost: OutpostModel }> {
     this.user = await this.api.getProfile();
     this.outpost = await this.api.getOutpost(this.config.outpostUuid);
-    const canEnter =
-      this.user.uuid === this.outpost.creator_user_uuid ||
-      (this.outpost.cohost_user_uuids ?? []).includes(this.user.uuid);
-    if (!canEnter) {
-      throw new Error("User is not creator or cohost; cannot enter.");
-    }
-
+    // Join permission is enforced by the Podium API/WS; addMeAsMember and joinOutpost will fail if the user is not allowed.
     await this.ws.connect();
     await this.api.addMeAsMember(this.config.outpostUuid);
     await this.ws.joinOutpost(this.config.outpostUuid, this.user.address, {
