@@ -54,14 +54,20 @@ async function main() {
             displayName: config.agent.agentDisplayName ?? config.agent.agentId,
         })
         : undefined;
-    const personaplexClient = config.conversationBackend.mode === "personaplex" && config.conversationBackend.personaplex
-        ? new personaplex_1.PersonaPlexClient({
-            serverUrl: config.conversationBackend.personaplex.serverUrl,
-            voicePrompt: config.conversationBackend.personaplex.voicePrompt,
-            sslInsecure: config.conversationBackend.personaplex.sslInsecure,
-            seed: config.conversationBackend.personaplex.seed,
-            turnTimeoutMs: config.conversationBackend.personaplex.turnTimeoutMs,
-        })
+    // PersonaPlex is optional: only instantiate and pass when using the PersonaPlex backend.
+    // Standard pipeline (asr-llm-tts) does not depend on PersonaPlex at all.
+    const conversationMode = config.conversationBackend.mode;
+    const personaplexConfig = conversationMode === "personaplex" && config.conversationBackend.personaplex
+        ? {
+            personaplexClient: new personaplex_1.PersonaPlexClient({
+                serverUrl: config.conversationBackend.personaplex.serverUrl,
+                voicePrompt: config.conversationBackend.personaplex.voicePrompt,
+                sslInsecure: config.conversationBackend.personaplex.sslInsecure,
+                seed: config.conversationBackend.personaplex.seed,
+                turnTimeoutMs: config.conversationBackend.personaplex.turnTimeoutMs,
+            }),
+            personaplexFallbackToLlm: Boolean(config.conversationBackend.personaplex.fallbackToLlm),
+        }
         : undefined;
     let ttsSink = () => { };
     let speakingController = null;
@@ -75,15 +81,24 @@ async function main() {
         vadSilenceMs: config.pipeline.vadSilenceMs,
         vadEnergyThreshold: config.pipeline.vadEnergyThreshold,
         vadAggressiveness: config.pipeline.vadAggressiveness,
-        conversationBackendMode: config.conversationBackend.mode,
-        personaplexClient,
-        personaplexFallbackToLlm: Boolean(config.conversationBackend.personaplex?.fallbackToLlm),
+        conversationBackendMode: conversationMode,
+        ...(personaplexConfig ?? {}),
         getFeedbackSentiment: () => feedbackCollector.getSentiment(),
         getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
         promptManager,
         coordinatorClient,
     }, {
-        onUserTranscript: (text) => logging_1.logger.info({ event: "USER_TRANSCRIPT", textLength: text.length }, "User said something"),
+        onUserTranscript: (text) => {
+            const shouldLogText = (() => {
+                const raw = (process.env.E2E_LOG_TRANSCRIPT_TEXT || process.env.LOG_TRANSCRIPT_TEXT || "").trim().toLowerCase();
+                return raw === "1" || raw === "true" || raw === "yes" || raw === "y" || raw === "on";
+            })();
+            logging_1.logger.info({
+                event: "USER_TRANSCRIPT",
+                textLength: text.length,
+                text: shouldLogText ? text : undefined,
+            }, "User said something");
+        },
         onAgentReply: (text) => logging_1.logger.info({ event: "AGENT_REPLY", textLength: text.length }, "Agent replied"),
         onTtsAudio: (buffer, meta) => {
             if (meta?.utteranceId && speakingController && !speakingController.shouldPlay(meta.utteranceId))

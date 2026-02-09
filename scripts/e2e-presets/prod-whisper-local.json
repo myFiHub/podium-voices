@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "id": "prod-whisper-local",
+  "description": "Production-live Jitsi E2E: botA plays deterministic speech WAV, botB uses whisper-local ASR and logs transcript (no LLM/TTS).",
+  "stimulus": {
+    "mode": "wav",
+    "wav": "stimuli/hello_world.wav",
+    "expectedPhrases": ["hello world"]
+  },
+  "timeouts": {
+    "totalMs": 240000,
+    "joinMs": 90000,
+    "recvMs": 120000,
+    "stabilityMs": 20000
+  },
+  "gates": {
+    "enabled": [
+      "JOIN_GATE",
+      "RECV_GATE",
+      "STABILITY_GATE",
+      "STIMULUS_PUBLISH_GATE",
+      "ASR_GATE"
+    ],
+    "personaplexFailurePolicy": "degraded"
+  },
+  "bots": {
+    "a": {
+      "role": "stimulus",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "stub",
+      "modelProvider": "stub",
+      "ttsProvider": "stub"
+    },
+    "b": {
+      "role": "full",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "whisper-local",
+      "modelProvider": "stub",
+      "ttsProvider": "stub"
+    }
+  }
+}
+

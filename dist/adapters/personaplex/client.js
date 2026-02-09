@@ -7,6 +7,7 @@ exports.PersonaPlexClient = void 0;
 const ws_1 = __importDefault(require("ws"));
 const opus_1 = require("@discordjs/opus");
 const pcm_utils_1 = require("../../audio/pcm-utils");
+const logging_1 = require("../../logging");
 const PERSONAPLEX_SAMPLE_RATE_HZ = 24000;
 const ROOM_SAMPLE_RATE_HZ = 48000;
 const INPUT_SAMPLE_RATE_HZ = 16000;
@@ -22,9 +23,23 @@ const TRAILING_SILENCE_FRAMES = Math.ceil(TRAILING_SILENCE_MS / OPUS_FRAME_MS);
 // After we finish sending, close when the server goes idle.
 const IDLE_CLOSE_AFTER_SEND_MS = 900;
 const IDLE_POLL_MS = 25;
-// Server can take 10–20s on first connection (voice/model loading). Use a generous timeout so
-// the server has time to send 0x00 before we give up. Failure is reported via stream/promise, not throw.
-const PERSONAPLEX_HANDSHAKE_TIMEOUT_MS = 20_000;
+// Server can take a long time on first connection (voice/model loading).
+// The server sends a 0x00 handshake byte only after it finishes initializing the system prompt.
+// Keep the timeout generous but bounded by the per-turn timeout.
+const PERSONAPLEX_HANDSHAKE_TIMEOUT_FLOOR_MS = 45_000;
+const PERSONAPLEX_HANDSHAKE_TIMEOUT_CEIL_MS = 180_000;
+// Capacity contract: PersonaPlex behaves like a single-capacity “brain” per server URL.
+// We keep a caller-side guard so we fail fast on accidental contention (misconfig, pooling, etc.)
+// instead of letting it surface as a misleading long timeout.
+const inflightByServerUrl = new Map();
+class PersonaPlexTurnError extends Error {
+    code;
+    constructor(code, message) {
+        super(message);
+        this.name = "PersonaPlexTurnError";
+        this.code = code;
+    }
+}
 class AsyncBufferQueue {
     queue = [];
     waiters = [];
@@ -113,10 +128,52 @@ class PersonaPlexClient {
      * - The returned `text` is best-effort: PersonaPlex emits token pieces during generation.
      */
     async runTurn(args) {
+        // NOTE: Some TS tooling has intermittently reported `turnId` missing from PersonaPlexRunTurnArgs.
+        // The runtime contract supports it (and orchestrator passes it). We access defensively.
+        const maybeTurnId = args.turnId;
+        const turnId = (typeof maybeTurnId === "string" && maybeTurnId.trim() ? maybeTurnId.trim() : undefined) ??
+            `personaplex-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const voicePrompt = args.voicePrompt ?? this.config.voicePrompt;
         const seed = args.seed ?? this.config.seed;
-        const serverUrl = this.config.serverUrl;
+        const serverUrl = (this.config.serverUrl || "").trim();
         const turnTimeoutMs = this.config.turnTimeoutMs;
+        // Routing / observability identity (used by router topology, and helpful even without a router).
+        const sessionKey = (() => {
+            const roomId = (process.env.PODIUM_OUTPOST_UUID || "").trim();
+            const agentId = (process.env.AGENT_ID || "").trim();
+            if (!roomId || !agentId)
+                return undefined;
+            return `${roomId}:${agentId}`;
+        })();
+        // Acquire single-flight “capacity” per serverUrl.
+        const current = inflightByServerUrl.get(serverUrl) || 0;
+        if (current >= 1) {
+            throw new PersonaPlexTurnError("busy", `PersonaPlex busy (another turn in-flight for ${serverUrl}).`);
+        }
+        inflightByServerUrl.set(serverUrl, current + 1);
+        let capacityReleased = false;
+        const releaseCapacity = () => {
+            if (capacityReleased)
+                return;
+            capacityReleased = true;
+            const n = inflightByServerUrl.get(serverUrl) || 0;
+            if (n <= 1)
+                inflightByServerUrl.delete(serverUrl);
+            else
+                inflightByServerUrl.set(serverUrl, n - 1);
+        };
+        const startedAt = Date.now();
+        logging_1.logger.info({
+            event: "PERSONAPLEX_TURN_START",
+            turnId,
+            serverUrl,
+            sessionKey,
+            voicePrompt,
+            seed,
+            timeoutMs: turnTimeoutMs,
+            userPcm16kBytes: args.userPcm16k.length,
+            textPromptLength: (args.textPrompt || "").length,
+        }, "PersonaPlex turn started");
         const q = new URLSearchParams();
         q.set("voice_prompt", voicePrompt);
         q.set("text_prompt", wrapSystemTags(args.textPrompt));
@@ -127,22 +184,62 @@ class PersonaPlexClient {
             perMessageDeflate: false,
             handshakeTimeout: Math.min(10_000, Math.max(2_000, Math.floor(turnTimeoutMs / 3))),
             rejectUnauthorized: this.config.sslInsecure ? false : undefined,
+            headers: sessionKey ? { "X-Session-Key": sessionKey } : undefined,
         });
         const encoder = new opus_1.OpusEncoder(PERSONAPLEX_SAMPLE_RATE_HZ, 1);
         const audioQueue = new AsyncBufferQueue();
         const tokens = [];
+        // PersonaPlex protocol: server sends 0x00 handshake when ready; client starts streaming audio after that.
         let handshakeDone = false;
         let sawAnyAudio = false;
         let lastAudioAt = Date.now();
         let sendDoneAt = null;
         let idleTimer = null;
+        let abortRequested = false;
+        let wsOpenedAt = 0;
+        let handshakeAt = 0;
+        let firstAudioAt = 0;
+        let audioFrames = 0;
+        let audioBytes48k = 0;
+        let ended = false;
+        const endOnce = (payload) => {
+            if (ended)
+                return;
+            ended = true;
+            releaseCapacity();
+            const finishedAt = Date.now();
+            const durationMs = finishedAt - startedAt;
+            const handshakeMs = handshakeAt > 0 ? handshakeAt - (wsOpenedAt || startedAt) : undefined;
+            const firstAudioMs = firstAudioAt > 0 ? firstAudioAt - startedAt : undefined;
+            logging_1.logger.info({
+                event: payload.ok ? "PERSONAPLEX_TURN_OK" : "PERSONAPLEX_TURN_ERROR",
+                turnId,
+                ok: payload.ok,
+                failureType: payload.failureType,
+                err: payload.err ? payload.err.message : undefined,
+                wsCloseCode: payload.wsCloseCode,
+                wsCloseReason: payload.wsCloseReason,
+                durationMs,
+                handshakeMs,
+                firstAudioMs,
+                sawAnyAudio,
+                audioFrames,
+                audioBytes48k,
+                tokenChars: tokens.join("").length,
+                aborted: abortRequested,
+            }, payload.ok ? "PersonaPlex turn completed" : "PersonaPlex turn failed");
+        };
         const textPromise = new Promise((resolve, reject) => {
             const timeoutTimer = setTimeout(() => {
+                const err = new PersonaPlexTurnError("turn_timeout", `PersonaPlex turn timed out after ${turnTimeoutMs}ms`);
+                // End the audio stream so the orchestrator's for-await exits and can run fallback.
+                audioQueue.end(err);
+                endOnce({ ok: false, failureType: "turn_timeout", err });
+                finish(err);
                 try {
                     ws.close();
                 }
                 catch { }
-                reject(new Error(`PersonaPlex turn timed out after ${turnTimeoutMs}ms`));
             }, turnTimeoutMs);
             const finish = (err) => {
                 clearTimeout(timeoutTimer);
@@ -150,18 +247,46 @@ class PersonaPlexClient {
                     clearInterval(idleTimer);
                     idleTimer = null;
                 }
+                // Capacity is typically released via endOnce; this is a safety net.
+                releaseCapacity();
                 if (err)
                     reject(err);
                 else
                     resolve(tokens.join(""));
             };
-            ws.on("close", () => {
+            ws.on("close", (code, reasonBuf) => {
+                const wsCloseCode = typeof code === "number" ? code : undefined;
+                const wsCloseReason = reasonBuf ? Buffer.from(reasonBuf).toString("utf8") : undefined;
+                if (abortRequested) {
+                    audioQueue.end();
+                    endOnce({ ok: true, wsCloseCode, wsCloseReason });
+                    finish();
+                    return;
+                }
+                // Deterministic failure: server closed before indicating readiness.
+                if (!handshakeDone) {
+                    const err = new PersonaPlexTurnError("handshake_failed", "PersonaPlex closed before handshake completed.");
+                    audioQueue.end(err);
+                    endOnce({ ok: false, failureType: "handshake_failed", err, wsCloseCode, wsCloseReason });
+                    finish(err);
+                    return;
+                }
+                if (!sawAnyAudio) {
+                    const err = new PersonaPlexTurnError("no_audio", "PersonaPlex closed without producing any audio frames.");
+                    audioQueue.end(err);
+                    endOnce({ ok: false, failureType: "no_audio", err, wsCloseCode, wsCloseReason });
+                    finish(err);
+                    return;
+                }
                 audioQueue.end();
+                endOnce({ ok: true, wsCloseCode, wsCloseReason });
                 finish();
             });
             ws.on("error", (err) => {
-                const e = err instanceof Error ? err : new Error(String(err));
+                const e0 = err instanceof Error ? err : new Error(String(err));
+                const e = new PersonaPlexTurnError("ws_error", e0.message);
                 audioQueue.end(e);
+                endOnce({ ok: false, failureType: "ws_error", err: e });
                 finish(e);
             });
             ws.on("message", (data, isBinary) => {
@@ -173,6 +298,10 @@ class PersonaPlexClient {
                 const kind = buf[0];
                 if (kind === 0x00) {
                     handshakeDone = true;
+                    if (handshakeAt === 0) {
+                        handshakeAt = Date.now();
+                        logging_1.logger.info({ event: "PERSONAPLEX_HANDSHAKE_OK", turnId, handshakeMs: handshakeAt - (wsOpenedAt || startedAt) }, "PersonaPlex handshake completed");
+                    }
                     return;
                 }
                 if (!handshakeDone) {
@@ -190,20 +319,29 @@ class PersonaPlexClient {
                     }
                     catch (e) {
                         // If decode fails, end the stream. This is safer than injecting garbage audio.
-                        const err = e instanceof Error ? e : new Error(String(e));
+                        const err0 = e instanceof Error ? e : new Error(String(e));
+                        const err = new PersonaPlexTurnError("decode_error", err0.message);
                         audioQueue.end(err);
                         try {
                             ws.close();
                         }
                         catch { }
+                        endOnce({ ok: false, failureType: "decode_error", err });
                         finish(err);
                         return;
                     }
                     sawAnyAudio = true;
                     lastAudioAt = Date.now();
+                    if (firstAudioAt === 0) {
+                        firstAudioAt = lastAudioAt;
+                        logging_1.logger.info({ event: "PERSONAPLEX_FIRST_AUDIO", turnId, firstAudioMs: firstAudioAt - startedAt }, "PersonaPlex first audio received");
+                    }
                     const pcm48 = (0, pcm_utils_1.resampleS16leMonoLinear)(pcm24, PERSONAPLEX_SAMPLE_RATE_HZ, ROOM_SAMPLE_RATE_HZ);
-                    if (pcm48.length > 0)
+                    if (pcm48.length > 0) {
+                        audioFrames += 1;
+                        audioBytes48k += pcm48.length;
                         audioQueue.push(pcm48);
+                    }
                     return;
                 }
                 if (kind === 0x02) {
@@ -214,17 +352,20 @@ class PersonaPlexClient {
                 }
             });
             ws.on("open", async () => {
+                wsOpenedAt = Date.now();
                 try {
-                    // Wait for handshake bytes (0x00). Use a long timeout so server can finish loading (voice/model).
+                    // Wait for handshake bytes (0x00). Server may still be initializing voice/system prompts.
+                    const handshakeTimeoutMs = Math.min(PERSONAPLEX_HANDSHAKE_TIMEOUT_CEIL_MS, Math.max(PERSONAPLEX_HANDSHAKE_TIMEOUT_FLOOR_MS, Math.floor(turnTimeoutMs * 0.8)));
                     const start = Date.now();
                     while (!handshakeDone) {
-                        if (Date.now() - start > PERSONAPLEX_HANDSHAKE_TIMEOUT_MS) {
-                            const err = new Error("PersonaPlex handshake timeout (no 0x00 received).");
+                        if (Date.now() - start > handshakeTimeoutMs) {
+                            const err = new PersonaPlexTurnError("handshake_timeout", "PersonaPlex handshake timeout (no 0x00 received).");
                             try {
                                 ws.close();
                             }
                             catch { }
                             audioQueue.end(err);
+                            endOnce({ ok: false, failureType: "handshake_timeout", err });
                             finish(err);
                             return;
                         }
@@ -243,7 +384,21 @@ class PersonaPlexClient {
                     for (const frame of allFrames) {
                         // Server expects: 0x01 + opus bytes
                         const opus = encoder.encode(frame);
-                        ws.send(Buffer.concat([Buffer.from([0x01]), opus]));
+                        try {
+                            ws.send(Buffer.concat([Buffer.from([0x01]), opus]));
+                        }
+                        catch (e) {
+                            const err0 = e instanceof Error ? e : new Error(String(e));
+                            const err = new PersonaPlexTurnError("send_error", err0.message);
+                            try {
+                                ws.close();
+                            }
+                            catch { }
+                            audioQueue.end(err);
+                            endOnce({ ok: false, failureType: "send_error", err });
+                            finish(err);
+                            return;
+                        }
                     }
                     sendDoneAt = Date.now();
                     // Close after server goes idle post-send, or after timeout.
@@ -269,12 +424,14 @@ class PersonaPlexClient {
                     }, IDLE_POLL_MS);
                 }
                 catch (e) {
-                    const err = e instanceof Error ? e : new Error(String(e));
+                    const err0 = e instanceof Error ? e : new Error(String(e));
+                    const err = new PersonaPlexTurnError("unexpected_error", err0.message);
                     try {
                         ws.close();
                     }
                     catch { }
                     audioQueue.end(err);
+                    endOnce({ ok: false, failureType: "unexpected_error", err });
                     finish(err);
                 }
             });
@@ -283,6 +440,7 @@ class PersonaPlexClient {
             audio48k: audioQueue.iterate(),
             text: textPromise,
             abort: () => {
+                abortRequested = true;
                 try {
                     ws.close();
                 }

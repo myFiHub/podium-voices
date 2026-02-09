@@ -109,7 +109,7 @@ When **`audio_inbound_bytes_delta`** is > 0 but **`pre_mixer_max_abs`** stays 0,
 
 - **Track binding is correct** (we are wiring the same track that receives RTP). In Chromium, this can still yield silence because **remote WebRTC audio may not be decoded into Web Audio unless the stream is also “consumed” by a media element** (Chromium bug 933677 class of behavior).
 - **Workaround (now implemented in `bot-page/bot.js`):** for each remote receiver stream we attach a **muted `<audio>` element** and call `play()` to force decoding, then feed the same stream into `createMediaStreamSource()`. With this in place, `pre_mixer_max_abs` should become non-zero during speech.
-- **If it still stays 0:** then try **headed** mode (`BROWSER_HEADED=true`, with Xvfb on Linux if needed) as an environment fallback and re-check `pre_mixer_max_abs`.
+- **If it still stays 0:** focus on track selection, mute state, mixer wiring, and attachment timing (see statsPath and `AUDIO_RECEIVE_STATUS_AND_RESEARCH.md` for alternative approaches).
 
 **If** `boundVia === "wrapper"` **or** the bound track id does **not** match `audio_inbound_track_identifier`:
 
@@ -145,7 +145,7 @@ If you see **`BOT_RX_AUDIO_STARTED`** and **`BOT_REMOTE_TRACK_ADDED`** but **`RO
 
 4. When room audio at Node is non-zero, follow **"Next steps when room audio in is working but the bot never replies"** (VAD/ASR tuning).
 
-**If humans hear each other but the bot's mixer stays 0:** The bot now tries multiple ways to get the remote audio stream (getStream(), getOriginalStream(), or the underlying MediaStreamTrack), enables the track if it was disabled, and logs `track_readyState` / `track_enabled` on `BOT_REMOTE_TRACK_ADDED`. Check those fields (e.g. `readyState: "live"`, `enabled: true`). If the track is live and enabled but the mixer is still silent, the issue is likely **Headless Chrome + WebRTC** (remote track data not delivered into Web Audio in headless mode). **Recommended fix:** run the bot in **headed mode** with a virtual display (e.g. Xvfb). Set `BROWSER_HEADED=true` in `.env.local` and run under Xvfb on Linux; see **`docs/HEADED_BROWSER.md`** for the decision tree, Xvfb usage, and scaling notes.
+**If humans hear each other but the bot's mixer stays 0:** The bot now tries multiple ways to get the remote audio stream (getStream(), getOriginalStream(), or the underlying MediaStreamTrack), enables the track if it was disabled, and logs `track_readyState` / `track_enabled` on `BOT_REMOTE_TRACK_ADDED`. Check those fields (e.g. `readyState: "live"`, `enabled: true`). If the track is live and enabled but the mixer is still silent, the failure is between decoded RTP and the Web Audio path; see **`docs/AUDIO_RECEIVE_STATUS_AND_RESEARCH.md`** for alternative approaches (consumer workaround, Insertable Streams, server-side capture).
 
 
 ## Next steps when room audio in is working but the bot never replies

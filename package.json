@@ -12,7 +12,15 @@
     "test:unit": "jest --testPathPattern=unit",
     "test:integration": "jest --testPathPattern=integration",
     "smoke": "node scripts/smoke.js",
-    "run-multi-agent": "node scripts/run-multi-agent.js"
+    "run-multi-agent": "node scripts/run-multi-agent.js",
+    "voices:kill": "node scripts/voices-kill.js",
+    "e2e:two-bot": "node scripts/e2e-two-bot.js",
+    "personaplex:up": "node scripts/personaplex-supervisor.js up",
+    "personaplex:status": "node scripts/personaplex-supervisor.js status",
+    "personaplex:down": "node scripts/personaplex-supervisor.js down",
+    "stimuli:generate": "node scripts/generate-stimuli.js",
+    "whisper-local:smoke": "node scripts/whisper-local-smoke.js",
+    "personaplex:router": "node scripts/personaplex-router.js"
   },
   "engines": {
     "node": ">=18"

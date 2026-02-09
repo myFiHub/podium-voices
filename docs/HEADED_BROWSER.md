@@ -1,27 +1,27 @@
-# Headed browser (Xvfb) for reliable remote audio
+# Headed browser (optional run mode)
 
-When the bot runs in **headless** Chromium, remote participant audio can arrive as silence at the mixer (`ROOM_MIXER_LEVEL` / `ROOM_AUDIO_RX_LEVEL` stay 0) even though humans hear each other. Running Chromium **headed** (with a virtual or real display) often fixes this by using the same media pipeline as normal Chrome.
+`BROWSER_HEADED=true` runs Chromium with a visible window instead of headless. It requires a display (e.g. real monitor or Xvfb on Linux).
 
-## Quick enable
+**Note:** Diagnosis and troubleshooting in this repo do not support headed mode as a fix for “bot doesn’t hear human” or silent remote audio. Use headed only if you need a visible browser for debugging (e.g. inspecting the bot page or WebRTC internals).
 
-1. Set in `.env.local`:
+## Enabling
+
+1. In `.env.local`:
    ```bash
    BROWSER_HEADED=true
    ```
 2. Ensure a display is available:
-   - **Local dev (Linux/WSL):** real display or `Xvfb` (see below).
-   - **Server/CI:** run under `Xvfb` or another virtual display.
+   - **Local (Linux/WSL):** real display or Xvfb (see below).
+   - **Server/CI:** run under Xvfb or another virtual display.
 
 3. Rebuild and start:
    ```bash
    npm run build && npm start
    ```
 
-4. In logs, confirm **`BROWSER_HEADED`** and then check **`ROOM_MIXER_LEVEL`** / **`ROOM_AUDIO_RX_LEVEL`** while someone speaks. If they go non-zero, headed mode has fixed the issue.
-
 ## Xvfb (virtual display) on Linux
 
-Headless servers have no display. Use Xvfb so Chromium has a virtual one:
+If there is no display (e.g. headless server), use Xvfb so Chromium can open a window:
 
 ```bash
 # Install (Debian/Ubuntu)
@@ -39,34 +39,7 @@ export DISPLAY=:99
 npm start
 ```
 
-Docker: use an image that includes Xvfb (e.g. `node` + `xvfb`), or run the above in the container entrypoint.
-
-## Decision tree (Phase 1: prove it)
-
-1. **Run with `BROWSER_HEADED=true` and Xvfb** (or a real display).
-2. Have a human speak for 5–10 seconds (unmuted).
-3. Check logs:
-   - **`ROOM_MIXER_LEVEL`** and **`ROOM_AUDIO_RX_LEVEL`** become **non-zero** → Headed fixes the issue. **Ship headed + Xvfb as the short-term production path.**
-   - They **stay 0** → The cause is not “headless decode path.” Focus on track selection, mute state, mixer wiring, or attachment timing (see `AUDIO_DEBUGGING.md`).
-
-## Phase 2: scaling
-
-- **Browser fleet (headed + Xvfb per bot)**  
-  One Chromium + Xvfb per bot. Scale by adding containers/VMs; use health checks (e.g. remote audio bytes increasing, mixer non-zero when humans talk), memory limits, and restart policies.
-
-- **Server-side / gateway ingestion (e.g. Jigasi-style)**  
-  Avoids “N browsers” by capturing audio on the server. More engineering, better scalability; consider if you need many concurrent bots.
-
-The “flags-only, stay headless” path is usually the least reliable long-term for this class of bug.
-
-## Tradeoffs (summary)
-
-| | Headed + Xvfb | Stay headless |
-|--|----------------|----------------|
-| **Remote audio in mixer** | Most reliable fix for “headless decode is silent” | May stay silent |
-| **Per-bot cost** | Higher (one browser + display per bot) | Lower |
-| **Scaling** | Scale by containers; infra-heavy but workable | Lighter, but only if audio actually works |
-| **Debugging** | Inspect page, webrtc-internals, audio graph | Harder |
+Docker: use an image that includes Xvfb, or run the above in the container entrypoint.
 
 ## Security note
 

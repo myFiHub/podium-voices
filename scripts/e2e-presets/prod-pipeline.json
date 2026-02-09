@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "prod-pipeline",
+  "description": "Production-live Jitsi E2E: botA publishes deterministic stimulus, botB uses ASR→LLM→TTS pipeline (no PersonaPlex).",
+  "stimulus": {
+    "mode": "tone"
+  },
+  "timeouts": {
+    "totalMs": 240000,
+    "joinMs": 90000,
+    "recvMs": 120000,
+    "stabilityMs": 20000
+  },
+  "gates": {
+    "enabled": [
+      "JOIN_GATE",
+      "RECV_GATE",
+      "STABILITY_GATE",
+      "STIMULUS_PUBLISH_GATE"
+    ],
+    "personaplexFailurePolicy": "degraded"
+  },
+  "bots": {
+    "a": {
+      "role": "stimulus",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "stub",
+      "modelProvider": "stub",
+      "ttsProvider": "stub"
+    },
+    "b": {
+      "role": "full",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "openai",
+      "modelProvider": "openai",
+      "ttsProvider": "google"
+    }
+  }
+}
+

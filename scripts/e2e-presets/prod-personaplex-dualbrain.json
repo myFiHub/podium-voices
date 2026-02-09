@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "prod-personaplex-dualbrain",
+  "description": "Production-live Jitsi E2E: both bots use PersonaPlex; requires 2 PersonaPlex instances (per-bot routing).",
+  "stimulus": {
+    "mode": "tone"
+  },
+  "timeouts": {
+    "totalMs": 240000,
+    "joinMs": 90000,
+    "recvMs": 120000,
+    "stabilityMs": 20000
+  },
+  "gates": {
+    "enabled": [
+      "JOIN_GATE",
+      "RECV_GATE",
+      "STABILITY_GATE",
+      "STIMULUS_PUBLISH_GATE",
+      "PERSONAPLEX_GATE"
+    ],
+    "personaplexFailurePolicy": "fatal"
+  },
+  "bots": {
+    "a": {
+      "role": "full",
+      "personaId": "default",
+      "conversationBackend": "personaplex"
+    },
+    "b": {
+      "role": "full",
+      "personaId": "default",
+      "conversationBackend": "personaplex"
+    }
+  }
+}
+

@@ -17,7 +17,7 @@ export interface LoggerConfig {
 }
 
 const defaultConfig: LoggerConfig = {
-  level: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+  level: ((process.env.LOG_LEVEL?.trim() as LogLevel) ?? "info"),
   pretty: process.env.NODE_ENV !== "production",
 };
 

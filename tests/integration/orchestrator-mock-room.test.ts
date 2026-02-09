@@ -15,6 +15,9 @@ import { VAD } from "../../src/pipeline/vad";
 import { pcmToWav } from "../../src/pipeline/audio-utils";
 
 const stubConfig: AppConfig = {
+  conversationBackend: {
+    mode: "asr-llm-tts",
+  },
   asr: { provider: "stub" },
   llm: { provider: "stub" },
   tts: { provider: "stub" },

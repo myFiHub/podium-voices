@@ -20,7 +20,7 @@ exports.logTurn = logTurn;
 exports.logError = logError;
 const pino_1 = __importDefault(require("pino"));
 const defaultConfig = {
-    level: process.env.LOG_LEVEL ?? "info",
+    level: (process.env.LOG_LEVEL?.trim() ?? "info"),
     pretty: process.env.NODE_ENV !== "production",
 };
 function createLogger(config = {}) {

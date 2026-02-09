@@ -262,8 +262,9 @@ class Orchestrator {
         let firstAudioAt;
         let started = false;
         const ppStart = Date.now();
+        let turn;
         try {
-            const turn = await this.personaplexClient.runTurn({ userPcm16k: audioSegment, textPrompt });
+            turn = await this.personaplexClient.runTurn({ turnId: utteranceId, userPcm16k: audioSegment, textPrompt });
             for await (const buf of turn.audio48k) {
                 if (this.cancelTts) {
                     // Barge-in: abort remote generation quickly.
@@ -305,9 +306,19 @@ class Orchestrator {
             }
         }
         catch (err) {
-            logging_1.logger.warn({ event: "PERSONAPLEX_FAILED", err: err.message }, "PersonaPlex turn failed");
+            // Absorb turn.text rejection so it does not become an unhandled rejection and crash the process.
+            if (turn !== undefined)
+                turn.text.catch(() => { });
+            const e = err;
+            const failureType = typeof e?.code === "string" ? String(e.code) : undefined;
+            logging_1.logger.warn({ event: "PERSONAPLEX_FAILED", err: err.message, failureType }, "PersonaPlex turn failed");
             if (this.personaplexFallbackToLlm) {
                 logging_1.logger.info({ event: "PERSONAPLEX_FALLBACK_TO_LLM" }, "Falling back to ASR+LLM+TTS for this turn");
+                // Release the coordinator turn so runTurnCore's requestTurn can succeed (we were granted the turn
+                // but never called endTurn because PersonaPlex threw; without this, coordinator would return allowed: false).
+                if (this.coordinatorClient && userSafe.text.length > 0) {
+                    await this.coordinatorClient.endTurn(userSafe.text, "").catch(() => { });
+                }
                 // If we have a usable transcript, fall back to the standard path without re-transcribing.
                 await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart });
                 return;

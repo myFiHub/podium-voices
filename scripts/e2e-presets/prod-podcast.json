@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "id": "prod-podcast",
+  "description": "Two bots with real ASR→LLM→TTS for back-and-forth podcast-style conversation. Bot A injects initial stimulus then listens and responds; bot B listens and responds. Requires OPENAI_API_KEY and Google TTS (or equivalent) in .env.local.",
+  "requireAsr": true,
+  "stimulus": {
+    "mode": "tone"
+  },
+  "timeouts": {
+    "totalMs": 240000,
+    "joinMs": 90000,
+    "recvMs": 120000,
+    "stabilityMs": 20000
+  },
+  "gates": {
+    "enabled": [
+      "JOIN_GATE",
+      "STABILITY_GATE",
+      "STIMULUS_PUBLISH_GATE",
+      "ASR_GATE",
+      "TURN_GATE"
+    ],
+    "personaplexFailurePolicy": "ignore"
+  },
+  "bots": {
+    "a": {
+      "role": "stimulus",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "openai",
+      "modelProvider": "openai",
+      "ttsProvider": "google"
+    },
+    "b": {
+      "role": "full",
+      "personaId": "default",
+      "conversationBackend": "asr-llm-tts",
+      "asrProvider": "openai",
+      "modelProvider": "openai",
+      "ttsProvider": "google"
+    }
+  }
+}

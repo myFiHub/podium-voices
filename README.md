@@ -2,16 +2,22 @@
 
 Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins the room using the configured token (permission is enforced by the Podium API), transcribes live speech (ASR), generates responses with an LLM, and speaks via TTS. The pipeline is **modular**: ASR, LLM, and TTS can be swapped via config (e.g. OpenAI now, self-hosted later).
 
-## PersonaPlex mode (optional)
+## Conversation backends
 
-This repo can optionally use **[NVIDIA PersonaPlex](https://github.com/NVIDIA/personaplex)** as a speech-to-speech conversation backend (instead of the default ASR → LLM → TTS chain).
+You choose **how each agent produces spoken replies**: the **standard pipeline** (ASR → LLM → TTS) or the **PersonaPlex** speech-to-speech backend. In **multi-agent** setups, each agent process can use a **different** backend (e.g. one agent on PersonaPlex, another on ASR/LLM/TTS).
 
-- **What changes**: Podium-voices still does VAD and (optionally) ASR for session memory/coordinator behavior, but **PersonaPlex generates the spoken response audio** via its `/api/chat` WebSocket API.
-- **Setup**: See [docs/PERSONAPLEX_SETUP.md](docs/PERSONAPLEX_SETUP.md) for installing and running the PersonaPlex server (Python, HF_TOKEN, libopus-dev).
+| Backend | Env | What runs | When to use |
+|--------|-----|------------|-------------|
+| **Standard (ASR → LLM → TTS)** | `CONVERSATION_BACKEND=asr-llm-tts` (default) | VAD → ASR → session memory + feedback → LLM → TTS. ASR, LLM, and TTS are separate adapters (OpenAI, Anthropic, Google, Azure, stub). | Default. Full control over ASR/LLM/TTS providers; works with API keys only. |
+| **PersonaPlex** | `CONVERSATION_BACKEND=personaplex` | VAD (and optionally ASR for memory/coordinator). **Response audio** is produced by the PersonaPlex server (speech-to-speech via its `/api/chat` WebSocket). Optional fallback to LLM+TTS if PersonaPlex fails. | When you want PersonaPlex’s voice/style and are able to run the PersonaPlex server (Python, HF token, libopus). |
+
+- **Single-agent**: Set `CONVERSATION_BACKEND` in `.env.local` to either `asr-llm-tts` or `personaplex`; for PersonaPlex also set `PERSONAPLEX_SERVER_URL`, `PERSONAPLEX_VOICE_PROMPT`, and optionally `PERSONAPLEX_SSL_INSECURE` for dev.
+- **Multi-agent**: Each agent process has its **own** env (or overrides). You can run Agent A with `asr-llm-tts` and Agent B with `personaplex` by starting them in **separate terminals** with the right env (or per-agent `.env` files). The optional launcher `npm run run-multi-agent` uses a **single** env for all agents; for **mix-and-match** backends, start the coordinator once then start each agent manually with the desired `CONVERSATION_BACKEND` (and PersonaPlex vars for PersonaPlex agents).
+- **PersonaPlex setup**: See [docs/PERSONAPLEX_SETUP.md](docs/PERSONAPLEX_SETUP.md) for installing and running the PersonaPlex server (Python, HF_TOKEN, libopus-dev) and [docs/PERSONAPLEX_ROUTER.md](docs/PERSONAPLEX_ROUTER.md) for pooling multiple instances.
 
 ## Architecture
 
-- **Pipeline**: Audio → VAD → ASR → Session Memory + Feedback → LLM → TTS → Audio out.
+- **Pipeline**: With the default backend (`asr-llm-tts`), flow is Audio → VAD → ASR → Session Memory + Feedback → LLM → TTS → Audio out. With `personaplex`, VAD (and optionally ASR for context) feed PersonaPlex, which returns response audio directly.
 - **Room**: Podium REST API + WebSocket + **Jitsi** (browser bot or stub) or **mock** for local testing.
 - **Jitsi (production)**: When `USE_JITSI_BOT=true`, a Playwright-controlled browser loads a minimal **bot join page** (`bot-page/`), joins the same Jitsi conference as the Podium web client, mixes remote audio (excluding self), and injects TTS as a synthetic mic. Node↔browser audio uses **48 kHz mono 20 ms frames**; Node resamples to 16 kHz only at the ASR boundary.
 - **Room audio in (receive)**: Chromium does not feed decoded remote WebRTC audio into Web Audio unless the stream is also consumed by a media element. The bot applies a **Chrome workaround** (hidden muted `<audio>` element per remote track) so the mixer receives real PCM; see [docs/AUDIO_RECEIVE_STATUS_AND_RESEARCH.md](docs/AUDIO_RECEIVE_STATUS_AND_RESEARCH.md).
@@ -65,8 +71,19 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 - **Responding to you**: The bot listens to **remote audio** (your mic) and replies after you finish speaking (VAD detects silence). For the bot to hear you, **unmute your microphone** in the meeting. If the bot never responds, check that your client is not muting outgoing audio and that the bot process logs show incoming audio (e.g. `USER_TRANSCRIPT` after you talk).
 - **Natural / influencer-style voice**: To reduce stilted or corporate-sounding replies, set **`PERSONA_ID=influencer`** in `.env.local`. The base prompt also includes speaking-style guidance (react to what was said, vary rhythm, natural transitions) so even `default` should sound more like a real host. For a stronger podcast/influencer vibe (e.g. mix of Obama/Rogan or Harris/Alex Cooper–style warmth and directness), use **`influencer`**.
 
+### E2E and podcast-style conversation
+
+The two-bot E2E harness (`node scripts/e2e-two-bot.js`) runs a coordinator plus two agents and checks **gates** (join, stability, stimulus publish, optional ASR/turn, optional PersonaPlex). **"PASS"** means all *enabled* gates were satisfied (e.g. at least one bot produced a reply); it does not guarantee multiple back-and-forth turns. For **continuous back-and-forth podcast-style conversation** (both bots listening and responding with real speech), use the **`prod-podcast`** preset: both bots use the real ASR→LLM→TTS pipeline (OpenAI ASR/LLM, Google TTS or equivalent). Set `OPENAI_API_KEY` and Google TTS in `.env.local`, then:
+
+```bash
+E2E_PRESET=prod-podcast node scripts/e2e-two-bot.js
+```
+
+The run passes when join, stability, stimulus publish, and at least one transcript + reply occur. The bots will keep conversing until the run timeout; for a live podcast demo, run without the harness (two separate `npm start` processes or use the coordinator with two agents and real pipeline config).
+
 ## Config
 
+- **Conversation backend**: `CONVERSATION_BACKEND` = `asr-llm-tts` (default) or `personaplex`. See [Conversation backends](#conversation-backends) for the difference and mix-and-match in multi-agent.
 - **ASR_PROVIDER**: `openai` (Whisper API), `whisper-local` (server-local/self-hosted Whisper), or `stub`.
   - For `whisper-local`: set `WHISPER_MODEL` (e.g. `base`, `small`), optional `WHISPER_ENGINE` (default `faster-whisper`), optional `WHISPER_PYTHON_PATH` (defaults to `python3`).
 - **MODEL_PROVIDER** / **LLM_PROVIDER**: `openai`, `anthropic`, or `stub`.
@@ -91,11 +108,13 @@ Phase 1 lets **two or more AI agents** join the **same** Podium Outpost room wit
 
 **You run three (or more) processes:** one coordinator, then one agent process per AI. The coordinator does **not** load `.env.local`; you set its env vars in the shell when you start it. Each agent process loads `.env.local` (or you override vars in the shell per terminal).
 
+**Conversation backend per agent:** Each agent can use either **standard (ASR→LLM→TTS)** or **PersonaPlex**. Use the same backend for all agents by setting `CONVERSATION_BACKEND` in a shared `.env.local` and using the launcher. To **mix backends** (e.g. Alex on ASR/LLM/TTS, Jamie on PersonaPlex), start each agent in a **separate terminal** with the desired `CONVERSATION_BACKEND` (and PersonaPlex URL/voice for PersonaPlex agents); the launcher uses one env for all agents so it does not support mix-and-match unless you use a config file that drives separate envs.
+
 ---
 
 **What to add or change for each agent**
 
-Start from your existing single-agent `.env.local`. For multi-agent you **add** these for every agent (and **change** one if you want two distinct participants):
+Start from your existing single-agent `.env.local`. For multi-agent you **add** these for every agent (and **change** as needed for distinct participants and backends):
 
 | Add or change | Example | Purpose |
 |---------------|---------|--------|
@@ -104,8 +123,9 @@ Start from your existing single-agent `.env.local`. For multi-agent you **add** 
 | **Add** `AGENT_DISPLAY_NAME` | `Alex` or `Jamie` | Name-addressing (e.g. “Alex, what do you think?”). |
 | **Change** `PERSONA_ID` per agent | `default` vs `hype` | Different tone/style per agent (recommended). |
 | **Change** `PODIUM_TOKEN` per agent | Token 1 vs Token 2 | Use a **separate** Podium token per agent so they appear as two different participants in the room. |
+| **Optional** `CONVERSATION_BACKEND` per agent | `asr-llm-tts` vs `personaplex` | When starting agents manually, set per terminal for mix-and-match; PersonaPlex agents also need `PERSONAPLEX_SERVER_URL`, `PERSONAPLEX_VOICE_PROMPT`. |
 
-Keep **the same** for both agents: `PODIUM_OUTPOST_UUID` (same room), all ASR/LLM/TTS and Podium API/WS URLs, Jitsi settings, and pipeline options. Only coordinator-related vars and agent identity (and optionally token) differ per process.
+Keep **the same** for both agents (unless mixing backends): `PODIUM_OUTPOST_UUID` (same room), Podium API/WS URLs, Jitsi settings. For **same backend** (all ASR/LLM/TTS or all PersonaPlex), also keep ASR/LLM/TTS (or PersonaPlex) config the same; only coordinator vars, agent identity, and optionally token differ per process.
 
 **Coordinator env (set in shell when starting; not in .env.local)**
 

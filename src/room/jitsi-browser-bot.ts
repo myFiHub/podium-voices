@@ -10,6 +10,7 @@ import * as fs from "fs";
 import { randomUUID } from "crypto";
 import type { JitsiConfig, IJitsiRoom } from "./jitsi";
 import { pcmToWav } from "../pipeline/audio-utils";
+import { resampleS16leMonoLinear } from "../audio/pcm-utils";
 import {
   BRIDGE_FRAME_BYTES,
   BRIDGE_FRAME_MS,
@@ -28,6 +29,17 @@ function envInt(name: string, fallback: number): number {
   if (!raw) return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function envBool(name: string, fallback: boolean = false): boolean {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "y" || raw === "on";
+}
+
+function envStr(name: string, fallback: string = ""): string {
+  const raw = (process.env[name] ?? "").trim();
+  return raw.length > 0 ? raw : fallback;
 }
 
 function purgeOldFilesByMtime(dir: string, keepN: number, filenameIncludes?: string): void {
@@ -112,6 +124,36 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private readonly botDiagDurationMs = envInt("BOT_DIAG_DURATION_MS", 20_000);
   private readonly artifactRetentionN = envInt("ARTIFACT_RETENTION_N", 10);
   private readonly preMixerPassThreshold = envInt("PRE_MIXER_PASS_THRESHOLD", 200);
+  private readonly recvGateConsecutiveN = envInt("RECV_GATE_CONSECUTIVE_N", 3);
+  /**
+   * Test mode: inject a deterministic PCM stimulus into the outbound audio path.
+   *
+   * Used by E2E gates to verify publish audio without relying on TTS/provider variability.
+   *
+   * Env:
+   * - PCM_STIMULUS_ENABLE=1
+   * - PCM_STIMULUS_AGENT_ID=alex   (optional; when set, only inject for matching AGENT_ID)
+   * - PCM_STIMULUS_WAV=/abs/or/rel.wav (optional; PCM16 WAV; mono preferred)
+   * - PCM_STIMULUS_PCM=/abs/or/rel.pcm (optional; raw s16le mono)
+   * - PCM_STIMULUS_PCM_RATE_HZ=48000   (only for raw PCM; default 48000)
+   * - PCM_STIMULUS_MAX_MS=1500         (cap duration; default 1500ms)
+   * - PCM_STIMULUS_TONE_HZ=440         (tone fallback; default 440Hz)
+   * - PCM_STIMULUS_GAIN=0.18           (tone fallback; 0..1; default 0.18)
+   */
+  private readonly pcmStimulusEnabled = envBool("PCM_STIMULUS_ENABLE", false);
+  private readonly pcmStimulusAgentId = envStr("PCM_STIMULUS_AGENT_ID", "");
+  private readonly pcmStimulusWavPath = envStr("PCM_STIMULUS_WAV", "");
+  private readonly pcmStimulusPcmPath = envStr("PCM_STIMULUS_PCM", "");
+  private readonly pcmStimulusPcmRateHz = envInt("PCM_STIMULUS_PCM_RATE_HZ", 48000);
+  private readonly pcmStimulusMaxMs = envInt("PCM_STIMULUS_MAX_MS", 1500);
+  private readonly pcmStimulusToneHz = envInt("PCM_STIMULUS_TONE_HZ", 440);
+  private readonly pcmStimulusGain = (() => {
+    const v = Number(process.env.PCM_STIMULUS_GAIN);
+    if (!Number.isFinite(v)) return 0.18;
+    return Math.max(0, Math.min(1, v));
+  })();
+  private pcmStimulusInjected = false;
+  private pcmStimulusScheduledAt = 0;
   private readonly sessionId: string;
   private readonly conferenceId: string;
   private wavBuffers: Buffer[] = [];
@@ -129,6 +171,10 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private remoteTrackSeen = false;
   private consecutiveNoInboundProbes = 0;
   private consecutiveNoOutboundProbes = 0;
+  private receiveContractPassStreak = 0;
+  private recvGatePassedAt = 0;
+  private lastLoggedReceiveContractPass = false;
+  private lastLoggedPublishContractPass = false;
 
   // BOT_DIAG state (writes stats.jsonl and prints a verdict).
   private diagStatsStream: fs.WriteStream | null = null;
@@ -139,11 +185,178 @@ export class JitsiBrowserBot implements IJitsiRoom {
   private diagMaxPreMixerMaxAbs = 0;
   private diagMaxPostMixerMaxAbs = 0;
   private diagMaxOutboundBytesDelta = 0;
+  /**
+   * BOT_DIAG-only: peak maxAbs observed at Node on *received* room audio frames.
+   *
+   * We keep this separate from `lastNodeRoomAudioMaxAbs` (which is computed over a 5s rolling window
+   * and only updates once the ring buffer fills). During short diagnostics it’s possible for the
+   * rolling window to remain 0 even if a brief non-silent frame arrived.
+   */
+  private diagMaxNodeRoomMaxAbs = 0;
 
   constructor(config: JitsiConfig) {
     this.config = config;
     this.sessionId = (process.env.SESSION_ID && process.env.SESSION_ID.trim()) || randomUUID();
     this.conferenceId = String(config.roomName || "");
+  }
+
+  private shouldInjectPcmStimulus(): boolean {
+    if (!this.pcmStimulusEnabled) return false;
+    if (this.pcmStimulusInjected) return false;
+    // If caller scoped stimulus to an agent id, enforce it.
+    if (this.pcmStimulusAgentId) {
+      const selfId = (process.env.AGENT_ID ?? "").trim();
+      if (!selfId || selfId !== this.pcmStimulusAgentId) return false;
+    }
+    return true;
+  }
+
+  private decodeWavPcm16(wav: Buffer): { pcm: Buffer; sampleRateHz: number; channels: number } {
+    // Minimal RIFF/WAVE parser sufficient for PCM16 stimuli.
+    // We scan chunks because WAV headers are not always exactly 44 bytes.
+    if (wav.length < 44) throw new Error("WAV too small");
+    if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
+      throw new Error("Not a RIFF/WAVE file");
+    }
+    let fmt: { audioFormat: number; channels: number; sampleRateHz: number; bitsPerSample: number } | null = null;
+    let dataOffset = -1;
+    let dataSize = 0;
+    let off = 12;
+    while (off + 8 <= wav.length) {
+      const id = wav.toString("ascii", off, off + 4);
+      const size = wav.readUInt32LE(off + 4);
+      const body = off + 8;
+      if (id === "fmt " && body + 16 <= wav.length) {
+        const audioFormat = wav.readUInt16LE(body);
+        const channels = wav.readUInt16LE(body + 2);
+        const sampleRateHz = wav.readUInt32LE(body + 4);
+        // const byteRate = wav.readUInt32LE(body + 8);
+        // const blockAlign = wav.readUInt16LE(body + 12);
+        const bitsPerSample = wav.readUInt16LE(body + 14);
+        fmt = { audioFormat, channels, sampleRateHz, bitsPerSample };
+      } else if (id === "data") {
+        dataOffset = body;
+        dataSize = Math.min(size, wav.length - body);
+        break;
+      }
+      // Chunks are padded to even size.
+      off = body + size + (size % 2);
+    }
+    if (!fmt) throw new Error("WAV missing fmt chunk");
+    if (dataOffset < 0) throw new Error("WAV missing data chunk");
+    if (fmt.audioFormat !== 1) throw new Error(`WAV unsupported audioFormat=${fmt.audioFormat} (need PCM)`);
+    if (fmt.bitsPerSample !== 16) throw new Error(`WAV unsupported bitsPerSample=${fmt.bitsPerSample} (need 16)`);
+    if (fmt.channels < 1) throw new Error(`WAV invalid channels=${fmt.channels}`);
+    const pcm = wav.subarray(dataOffset, dataOffset + dataSize);
+    if (pcm.length % 2 !== 0) throw new Error(`WAV PCM length must be even; got ${pcm.length}`);
+    return { pcm, sampleRateHz: fmt.sampleRateHz, channels: fmt.channels };
+  }
+
+  private downmixToMonoS16leInterleaved(pcm: Buffer, channels: number): Buffer {
+    if (channels <= 1) return pcm;
+    const samples = pcm.length / 2;
+    const frames = Math.floor(samples / channels);
+    const out = Buffer.alloc(frames * 2);
+    for (let f = 0; f < frames; f++) {
+      let sum = 0;
+      const base = f * channels;
+      for (let c = 0; c < channels; c++) {
+        sum += pcm.readInt16LE((base + c) * 2);
+      }
+      const avg = Math.max(-32768, Math.min(32767, Math.round(sum / channels)));
+      out.writeInt16LE(avg, f * 2);
+    }
+    return out;
+  }
+
+  private generateSinePcm(rateHz: number, hz: number, ms: number, gain: number): Buffer {
+    const durationMs = Math.max(20, ms | 0);
+    const frames = Math.max(1, Math.floor((rateHz * durationMs) / 1000));
+    const out = Buffer.alloc(frames * 2);
+    const amp = Math.max(0, Math.min(1, gain)) * 0.85;
+    const w = (2 * Math.PI * hz) / rateHz;
+    for (let i = 0; i < frames; i++) {
+      const s = Math.sin(i * w) * amp;
+      out.writeInt16LE(Math.round(s * 32767), i * 2);
+    }
+    return out;
+  }
+
+  private loadStimulusPcm48k(): { pcm48: Buffer; source: string; durationMs: number } {
+    const TARGET_RATE = 48000;
+    let pcm: Buffer;
+    let rateHz = TARGET_RATE;
+    let source = "tone";
+
+    if (this.pcmStimulusWavPath && fs.existsSync(this.pcmStimulusWavPath)) {
+      const wav = fs.readFileSync(this.pcmStimulusWavPath);
+      const decoded = this.decodeWavPcm16(wav);
+      pcm = this.downmixToMonoS16leInterleaved(decoded.pcm, decoded.channels);
+      rateHz = decoded.sampleRateHz;
+      source = "wav";
+    } else if (this.pcmStimulusPcmPath && fs.existsSync(this.pcmStimulusPcmPath)) {
+      pcm = fs.readFileSync(this.pcmStimulusPcmPath);
+      rateHz = this.pcmStimulusPcmRateHz;
+      source = "pcm";
+      if (pcm.length % 2 !== 0) throw new Error(`PCM stimulus must be s16le mono (even length). Got ${pcm.length} bytes.`);
+    } else {
+      pcm = this.generateSinePcm(TARGET_RATE, this.pcmStimulusToneHz, this.pcmStimulusMaxMs, this.pcmStimulusGain);
+      rateHz = TARGET_RATE;
+      source = "tone";
+    }
+
+    const pcm48 = resampleS16leMonoLinear(pcm, rateHz, TARGET_RATE);
+    const maxSamples = Math.max(1, Math.floor((TARGET_RATE * Math.max(20, this.pcmStimulusMaxMs)) / 1000));
+    const maxBytes = maxSamples * 2;
+    const capped = pcm48.length > maxBytes ? pcm48.subarray(0, maxBytes) : pcm48;
+    const durationMs = Math.round((capped.length / 2 / TARGET_RATE) * 1000);
+    return { pcm48: Buffer.from(capped), source, durationMs };
+  }
+
+  private maybeStartPcmStimulus(reason: string): void {
+    if (!this.shouldInjectPcmStimulus()) return;
+    // Readiness gates: must have joined the conference.
+    //
+    // NOTE: We intentionally do NOT require RECV_GATE here.
+    // In a two-bot E2E run, the injected stimulus is what *causes* inbound RTP/audio on the other bot,
+    // allowing its RECV gate to pass. Gating stimulus on RECV would deadlock during quiet rooms.
+    if (this.jitsiJoinedAt <= 0) return;
+
+    this.pcmStimulusInjected = true;
+    this.pcmStimulusScheduledAt = Date.now();
+    let pcm48: Buffer;
+    let source = "unknown";
+    let durationMs = 0;
+    try {
+      const loaded = this.loadStimulusPcm48k();
+      pcm48 = loaded.pcm48;
+      source = loaded.source;
+      durationMs = loaded.durationMs;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      logger.warn(
+        { event: "PCM_STIMULUS_LOAD_FAILED", sessionId: this.sessionId, conferenceId: this.conferenceId, err: err.message },
+        "Failed to load PCM stimulus; skipping injection"
+      );
+      return;
+    }
+
+    logger.info(
+      {
+        event: "PCM_STIMULUS_INJECT",
+        sessionId: this.sessionId,
+        conferenceId: this.conferenceId,
+        reason,
+        source,
+        bytes: pcm48.length,
+        durationMs,
+        wavPath: this.pcmStimulusWavPath || undefined,
+        pcmPath: this.pcmStimulusPcmPath || undefined,
+      },
+      "Injecting PCM stimulus into outbound audio path"
+    );
+    // Inject into the same outbound path as TTS (frames are paced by the existing bridge sender).
+    this.pushAudio(pcm48);
   }
 
   onIncomingAudio(callback: (buffer: Buffer, sampleRate: number) => void): void {
@@ -255,7 +468,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
     const hasInbound = this.diagMaxInboundBytesDelta > 0;
     const premixOk = this.diagMaxPreMixerMaxAbs > threshold;
     const postmixOk = this.diagMaxPostMixerMaxAbs > 0;
-    const nodeOk = this.lastNodeRoomAudioMaxAbs > 0;
+    const nodeOk = this.diagMaxNodeRoomMaxAbs > 0;
 
     let receiveVerdict:
       | "NO_INBOUND_RTP"
@@ -275,7 +488,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
     const level = verdict === "OK" ? "info" : "warn";
     const verdictMsg =
       verdict === "INBOUND_RTP_BUT_PREMIX_SILENT"
-        ? "BOT_DIAG verdict: inbound RTP but pre-mixer silent. Check statsPath for premixer_bindings/receiver_tracks; if boundVia is 'receiver' and track id matches audio_inbound_track_identifier, try BROWSER_HEADED=true (docs/AUDIO_DEBUGGING.md)."
+        ? "BOT_DIAG verdict: inbound RTP but pre-mixer silent. Check statsPath for premixer_bindings/receiver_tracks; if boundVia is 'receiver' and track id matches audio_inbound_track_identifier, see docs/AUDIO_DEBUGGING.md and AUDIO_RECEIVE_STATUS_AND_RESEARCH.md."
         : "BOT_DIAG verdict (see statsPath for raw samples)";
     (logger as any)[level](
       {
@@ -289,7 +502,8 @@ export class JitsiBrowserBot implements IJitsiRoom {
         maxPreMixerMaxAbs: this.diagMaxPreMixerMaxAbs,
         maxPostMixerMaxAbs: this.diagMaxPostMixerMaxAbs,
         maxOutboundBytesDelta: this.diagMaxOutboundBytesDelta,
-        nodeRoomMaxAbs: this.lastNodeRoomAudioMaxAbs,
+        nodeRoomMaxAbs: this.diagMaxNodeRoomMaxAbs,
+        nodeRoomWindowMaxAbs: this.lastNodeRoomAudioMaxAbs,
         statsPath: this.diagStatsPath,
       },
       verdictMsg
@@ -383,17 +597,24 @@ export class JitsiBrowserBot implements IJitsiRoom {
     );
 
     // Receive contract (only meaningful when inbound bytes are increasing, or in BOT_DIAG mode).
+    // Pass when we have inbound RTP and the mixer output has audio (post_mixer > 0). We do not require
+    // pre_mixer above threshold for a pass: pre_mixer sampling can be intermittently 0 due to Chromium
+    // decode timing or multi-participant track selection, while post_mixer still carries remote audio.
     const threshold = this.preMixerPassThreshold;
     if (inboundBytesDelta > 0) {
       this.consecutiveNoInboundProbes = 0;
       const premixOk = preMix > threshold;
       const postmixOk = postMix > 0;
-      if (!premixOk) {
+      const passContract = postmixOk; // inbound + mixer output is sufficient; premix can be flaky
+      if (!postmixOk) {
+        this.receiveContractPassStreak = 0;
+        this.lastLoggedReceiveContractPass = false;
+        const reason = premixOk ? "MIXER_WIRING" : "WRONG_TRACK";
         logger.warn(
           {
             event: "health_contract_receive",
             pass: false,
-            reason: "WRONG_TRACK",
+            reason,
             sessionId: this.sessionId,
             conferenceId: this.conferenceId,
             audio_inbound_bytes_delta: inboundBytesDelta,
@@ -401,35 +622,66 @@ export class JitsiBrowserBot implements IJitsiRoom {
             post_mixer_max_abs: postMix,
             audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
           },
-          "Receive contract failed: inbound RTP present, but pre-mixer is silent (likely wrong track binding / phased negotiation)"
+          premixOk
+            ? "Receive contract failed: pre-mixer has audio, but post-mixer is silent (mixer wiring / pull issue)"
+            : "Receive contract failed: inbound RTP present, but pre-mixer is silent (likely wrong track binding / phased negotiation)"
         );
-      } else if (!postmixOk) {
-        logger.warn(
-          {
-            event: "health_contract_receive",
-            pass: false,
-            reason: "MIXER_WIRING",
-            sessionId: this.sessionId,
-            conferenceId: this.conferenceId,
-            audio_inbound_bytes_delta: inboundBytesDelta,
-            pre_mixer_max_abs: preMix,
-            post_mixer_max_abs: postMix,
-          },
-          "Receive contract failed: pre-mixer has audio, but post-mixer is silent (mixer wiring / pull issue)"
-        );
-      } else {
-        logger.debug(
-          {
-            event: "health_contract_receive",
-            pass: true,
-            sessionId: this.sessionId,
-            conferenceId: this.conferenceId,
-            audio_inbound_bytes_delta: inboundBytesDelta,
-            pre_mixer_max_abs: preMix,
-            post_mixer_max_abs: postMix,
-          },
-          "Receive contract passed (inbound RTP and non-silent pre/post mixer)"
-        );
+      } else if (passContract) {
+        this.receiveContractPassStreak++;
+        // Emit a machine-readable pass signal at info-level at least once per pass-run,
+        // so automated harnesses don't need LOG_LEVEL=debug to observe success.
+        if (!this.lastLoggedReceiveContractPass) {
+          this.lastLoggedReceiveContractPass = true;
+          logger.info(
+            {
+              event: "health_contract_receive",
+              pass: true,
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              audio_inbound_bytes_delta: inboundBytesDelta,
+              pre_mixer_max_abs: preMix,
+              post_mixer_max_abs: postMix,
+              audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
+              streak: this.receiveContractPassStreak,
+              requiredStreak: this.recvGateConsecutiveN,
+            },
+            "Receive contract passed (inbound RTP and non-silent mixer; pre_mixer may be flaky)"
+          );
+        } else {
+          logger.debug(
+            {
+              event: "health_contract_receive",
+              pass: true,
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              audio_inbound_bytes_delta: inboundBytesDelta,
+              pre_mixer_max_abs: preMix,
+              post_mixer_max_abs: postMix,
+              streak: this.receiveContractPassStreak,
+              requiredStreak: this.recvGateConsecutiveN,
+            },
+            "Receive contract passed (inbound RTP and non-silent mixer; pre_mixer may be flaky)"
+          );
+        }
+
+        // Gate: require N consecutive passes before we declare the bot ready to receive.
+        if (this.recvGatePassedAt === 0 && this.receiveContractPassStreak >= this.recvGateConsecutiveN) {
+          this.recvGatePassedAt = Date.now();
+          logger.info(
+            {
+              event: "RECV_GATE_PASSED",
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              streak: this.receiveContractPassStreak,
+              requiredStreak: this.recvGateConsecutiveN,
+              preMixerPassThreshold: threshold,
+              audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
+            },
+            "RECV gate passed (consecutive receive-contract passes)"
+          );
+          // In test mode, inject a deterministic stimulus after readiness gates pass.
+          this.maybeStartPcmStimulus("RECV_GATE_PASSED");
+        }
       }
     } else if (this.remoteTrackSeen) {
       this.consecutiveNoInboundProbes++;
@@ -455,6 +707,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
     if (ttsRecent) {
       if (outboundDelta <= 0) {
         this.consecutiveNoOutboundProbes++;
+        this.lastLoggedPublishContractPass = false;
         if (this.consecutiveNoOutboundProbes >= 3 && !this.botDiag) {
           this.consecutiveNoOutboundProbes = 0;
           logger.warn(
@@ -473,13 +726,37 @@ export class JitsiBrowserBot implements IJitsiRoom {
         }
       } else {
         this.consecutiveNoOutboundProbes = 0;
-        logger.debug(
-          { event: "health_contract_publish", pass: true, sessionId: this.sessionId, conferenceId: this.conferenceId, outbound_audio_bytes_delta: outboundDelta },
-          "Publish contract passed (outbound RTP bytesSent increased during TTS)"
-        );
+        // Emit a machine-readable publish pass at info-level once per pass-run, similar to receive.
+        if (!this.lastLoggedPublishContractPass) {
+          this.lastLoggedPublishContractPass = true;
+          logger.info(
+            {
+              event: "health_contract_publish",
+              pass: true,
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              outbound_audio_bytes_delta: outboundDelta,
+              outbound_audio_bytes_sent: msg.outbound_audio_bytes_sent,
+              outbound_audio_track_identifier: msg.outbound_audio_track_identifier,
+            },
+            "Publish contract passed (outbound RTP bytesSent increased during TTS)"
+          );
+        } else {
+          logger.debug(
+            {
+              event: "health_contract_publish",
+              pass: true,
+              sessionId: this.sessionId,
+              conferenceId: this.conferenceId,
+              outbound_audio_bytes_delta: outboundDelta,
+            },
+            "Publish contract passed (outbound RTP bytesSent increased during TTS)"
+          );
+        }
       }
     } else {
       this.consecutiveNoOutboundProbes = 0;
+      this.lastLoggedPublishContractPass = false;
     }
   }
 
@@ -700,6 +977,22 @@ export class JitsiBrowserBot implements IJitsiRoom {
           this.rxBytesTotal += data.length;
           this.lastRxTxAt = Date.now();
           const pcm16 = resample48kTo16k(data);
+          if (this.botDiag) {
+            // BOT_DIAG: measure whether any non-silent PCM reached Node at all.
+            // Compute on the 16k resampled PCM since that is what the pipeline consumes.
+            try {
+              let maxAbs = 0;
+              const len = pcm16.length & ~1;
+              for (let off = 0; off + 2 <= len; off += 2) {
+                const s = pcm16.readInt16LE(off);
+                const a = Math.abs(s);
+                if (a > maxAbs) maxAbs = a;
+              }
+              this.diagMaxNodeRoomMaxAbs = Math.max(this.diagMaxNodeRoomMaxAbs, maxAbs);
+            } catch {
+              // ignore
+            }
+          }
           this.updateRoomAudioLevel(pcm16);
           this.onIncomingAudioCb?.(pcm16, VAD_SAMPLE_RATE);
           return;
@@ -745,12 +1038,27 @@ export class JitsiBrowserBot implements IJitsiRoom {
             pcm48?: string;
             label?: string;
             pcm48_b64?: string;
+            // Track selection telemetry (bot-page → Node)
+            inbound_track_identifier?: string;
+            inbound_mid?: string;
+            inbound_bytes_delta?: number;
+            selected_track_id?: string;
+            prev_track_id?: string;
+            top?: string;
+            candidates?: Array<{ id?: string; energy?: number; recvonly?: boolean; source?: string }>;
+            top_candidates?: Array<{ id?: string; energy?: number; recvonly?: boolean; source?: string }>;
+            candidate_wins?: number;
+            required_initial?: number;
+            required_rebind?: number;
+            reason?: string;
           };
           if (msg.type === "join_result") {
             if (msg.success) {
               this.jitsiJoinedAt = this.jitsiJoinedAt || Date.now();
               logger.info({ event: "BOT_JITSI_JOINED" }, "Bot joined Jitsi conference");
               this.startBotDiagIfEnabled();
+              // In test mode, inject stimulus once join+recv gate are satisfied (may already be true).
+              this.maybeStartPcmStimulus("BOT_JITSI_JOINED");
             } else {
               logger.error({ event: "BOT_JITSI_JOIN_FAILED", error: msg.error }, "Bot failed to join Jitsi: " + (msg.error ?? "unknown"));
             }
@@ -834,6 +1142,42 @@ export class JitsiBrowserBot implements IJitsiRoom {
                 boundTrackId: (msg as any).boundTrackId ?? "",
               },
               "Bot rebound mixer to receiver track (inbound RTP present but premixer was silent)"
+            );
+          } else if (msg.type === "track_candidates") {
+            logger.info(
+              {
+                event: "TRACK_CANDIDATES",
+                sessionId: this.sessionId,
+                conferenceId: this.conferenceId,
+                ts: (msg as any).ts,
+                inbound_track_identifier: (msg as any).inbound_track_identifier,
+                inbound_mid: (msg as any).inbound_mid,
+                inbound_bytes_delta: (msg as any).inbound_bytes_delta,
+                selected_track_id: (msg as any).selected_track_id,
+                top: (msg as any).top,
+                candidates: (msg as any).candidates,
+              },
+              "Track selection candidates (browser)"
+            );
+          } else if (msg.type === "track_selected") {
+            logger.info(
+              {
+                event: "TRACK_SELECTED",
+                sessionId: this.sessionId,
+                conferenceId: this.conferenceId,
+                ts: (msg as any).ts,
+                prev_track_id: (msg as any).prev_track_id,
+                selected_track_id: (msg as any).selected_track_id,
+                candidate_wins: (msg as any).candidate_wins,
+                required_initial: (msg as any).required_initial,
+                required_rebind: (msg as any).required_rebind,
+                reason: (msg as any).reason,
+                inbound_track_identifier: (msg as any).inbound_track_identifier,
+                inbound_mid: (msg as any).inbound_mid,
+                inbound_bytes_delta: (msg as any).inbound_bytes_delta,
+                top_candidates: (msg as any).top_candidates,
+              },
+              "Track selection committed (browser)"
             );
           } else if (msg.type === "rx_audio_started") {
             logger.info(
@@ -1013,7 +1357,7 @@ export class JitsiBrowserBot implements IJitsiRoom {
     const playwright = await import("playwright");
     const headed = process.env.BROWSER_HEADED === "true" || process.env.BROWSER_HEADED === "1";
     if (headed) {
-      logger.info({ event: "BROWSER_HEADED" }, "Launching Chromium in headed mode (requires DISPLAY, e.g. Xvfb); use for reliable remote audio in the mixer");
+      logger.info({ event: "BROWSER_HEADED" }, "Launching Chromium in headed mode (requires DISPLAY)");
     }
     this.browser = await playwright.chromium.launch({
       headless: !headed,

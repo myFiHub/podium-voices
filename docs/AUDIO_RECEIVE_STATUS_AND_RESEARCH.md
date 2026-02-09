@@ -151,7 +151,6 @@ These allow anyone to confirm “inbound RTP present, correct receiver track bou
 ## 9. References in This Repo
 
 - **docs/AUDIO_DEBUGGING.md** — General audio debugging, truth probes, contracts, interpreting `INBOUND_RTP_BUT_PREMIX_SILENT`.
-- **docs/HEADED_BROWSER.md** — Headed/Xvfb (assumed not the solution here).
 - **bot-page/bot.js** — `addRemoteTrackToMixer`, `getReceiverTrackById`, `getReceiverTrackByMid`, `rebindMixerToReceiverTrack`, truth probe and premixer_bindings/receiver_tracks.
 - **src/room/jitsi-browser-bot.ts** — Bridge, BOT_DIAG, verdict logging, truth_probe handling.
 

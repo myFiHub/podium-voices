@@ -11,6 +11,11 @@ export interface PersonaPlexClientConfig {
     turnTimeoutMs: number;
 }
 export interface PersonaPlexRunTurnArgs {
+    /**
+     * Optional stable identifier for correlating logs/metrics for a single PersonaPlex turn.
+     * Typically the orchestrator's utterance id (e.g. "personaplex-...").
+     */
+    turnId?: string;
     /** User audio segment (mono s16le PCM) at 16 kHz. */
     userPcm16k: Buffer;
     /** Persona/role prompt (server expects leading/trailing space tags). */

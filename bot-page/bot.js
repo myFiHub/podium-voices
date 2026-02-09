@@ -71,6 +71,22 @@
   var remoteParticipantsAdded = {};
   /** Per-participant binding info to support stats-based rebinding and pre-mixer analysis. */
   var remoteBindings = {}; // key -> { participantId, trackId, source, analyser, analyserBuf, chromeConsumeAudio? }
+  /**
+   * Deterministic remote-audio track selection state (prevents binding flapping during renegotiation).
+   * Track IDs here refer to native receiver track ids (MediaStreamTrack.id) which we also mirror as
+   * `stats.audio_inbound_track_identifier` when possible.
+   */
+  var rxTrackSelection = {
+    selectedTrackId: "",
+    candidateTrackId: "",
+    candidateWins: 0,
+    lastRebindAtMs: 0,
+    lastCandidatesSentAtMs: 0,
+  };
+  // Hysteresis knobs: conservative defaults to avoid churn.
+  var RX_SELECT_K = 3; // wins required to select initially
+  var RX_REBIND_M = 4; // wins required to replace selection
+  var RX_REBIND_COOLDOWN_MS = 4000;
 
   // Capture uncaught errors/rejections with as much context as the browser provides.
   // Playwright's pageerror sometimes lacks stack traces; these hooks often include them.
@@ -480,10 +496,29 @@
     try {
       if (!stream || typeof stream.getAudioTracks !== "function" || stream.getAudioTracks().length === 0) return null;
       var audio = new Audio();
-      audio.muted = true; // muted playback is allowed without a user gesture in Chromium
+      // IMPORTANT:
+      // - Some Chromium builds still won't reliably decode remote WebRTC audio into Web Audio unless the
+      //   MediaStream is actively rendered by a media element.
+      // - In some environments, `muted=true` is treated as "not really playing" for decode purposes.
+      //
+      // So: keep it inaudible via volume=0, but do NOT rely solely on `muted=true`.
+      audio.muted = false;
+      audio.volume = 0;
       audio.autoplay = true;
       audio.playsInline = true;
       audio.srcObject = stream;
+      // Hint for debugging / leak detection.
+      try { audio.setAttribute("data-bot-remote-consumer", String(debugLabel || "")); } catch (e) { /* ignore */ }
+      // Some Chromium variants behave better when the element is in the DOM.
+      // (No visible impact: keep it hidden.)
+      try {
+        audio.style.display = "none";
+        var parent = document.body || document.documentElement;
+        if (parent && typeof parent.appendChild === "function") {
+          parent.appendChild(audio);
+          audio.__botAppended = true;
+        }
+      } catch (e) { /* ignore */ }
       var p = audio.play();
       if (p && typeof p.catch === "function") {
         p.catch(function (err) {
@@ -504,6 +539,8 @@
       if (!audioElem) return;
       try { if (typeof audioElem.pause === "function") audioElem.pause(); } catch (e) { /* ignore */ }
       try { audioElem.srcObject = null; } catch (e) { /* ignore */ }
+      // Remove from DOM if we appended it (best-effort; safe even if it wasn't appended).
+      try { if (audioElem.parentNode) audioElem.parentNode.removeChild(audioElem); } catch (e) { /* ignore */ }
     } catch (e) { /* ignore */ }
   }
 
@@ -1033,36 +1070,162 @@
           stats.pre_mixer_by_track_id = preMixerByTrackId;
 
           var now = Date.now();
-          // Track Binding Contract: during the first ~15s after join, prefer the track whose native id matches inbound RTP stats.
+          /**
+           * Deterministic track selection + rebind state machine.
+           * Symptoms addressed: inbound RTP present but pre-mixer silent (WRONG_TRACK), phased negotiation track churn,
+           * wrapper-vs-receiver wiring mismatch, and long-running sessions beyond the old 15s window.
+           */
           try {
-            var wanted = stats.audio_inbound_track_identifier ? String(stats.audio_inbound_track_identifier) : "";
-            if (wanted && joinedAtMs && now - joinedAtMs < 15000 && (stats.audio_inbound_bytes_delta || 0) > 0) {
-              var alreadyBound = false;
-              for (var kk in remoteBindings) {
-                if (!Object.prototype.hasOwnProperty.call(remoteBindings, kk)) continue;
-                var bb = remoteBindings[kk];
-                if (bb && String(bb.trackId || "") === wanted) { alreadyBound = true; break; }
-              }
-              if (!alreadyBound) {
-                rebindToInboundTrackIdentifier(wanted);
+            var inboundId = stats.audio_inbound_track_identifier ? String(stats.audio_inbound_track_identifier) : "";
+            var inboundMid = stats.inbound_mid ? String(stats.inbound_mid) : "";
+            var inboundDelta = stats.audio_inbound_bytes_delta || 0;
+
+            // Build candidate list (deduped), preferring recvonly transceivers and inbound RTP identifier.
+            var candMap = {};
+            var candidates = [];
+
+            function addCandidate(id, source, isRecvOnly) {
+              if (!id) return;
+              var sid = String(id);
+              if (candMap[sid]) return;
+              candMap[sid] = true;
+              var energy = (stats.pre_mixer_by_track_id && stats.pre_mixer_by_track_id[sid]) ? (stats.pre_mixer_by_track_id[sid] || 0) : 0;
+              candidates.push({ id: sid, energy: energy, source: source || "", recvonly: isRecvOnly === true });
+            }
+
+            // Candidate source 1: audio transceivers (recvonly are likely remote audio).
+            if (Array.isArray(audioTransceivers)) {
+              for (var ct = 0; ct < audioTransceivers.length; ct++) {
+                var at = audioTransceivers[ct];
+                if (!at || !at.receiverTrackId) continue;
+                var dir = String(at.currentDirection || at.direction || "");
+                var isRecvOnly = (dir === "recvonly");
+                addCandidate(at.receiverTrackId, "transceiver:" + String(at.mid || ""), isRecvOnly);
               }
             }
-          } catch (e) { /* ignore */ }
 
-          // When inbound RTP is present but premixer for that track is silent, rebind to receiver track (by id or mid).
-          // Only try when current binding is still "wrapper" to avoid churn and repeated disconnect/reconnect.
-          try {
-            var wantedT = stats.audio_inbound_track_identifier ? String(stats.audio_inbound_track_identifier) : "";
-            if (wantedT && (stats.audio_inbound_bytes_delta || 0) > 0) {
-              var premixForT = (stats.pre_mixer_by_track_id && stats.pre_mixer_by_track_id[wantedT]) || 0;
-              if (premixForT < 200) {
-                var bindingForT = null;
-                for (var bk in remoteBindings) {
-                  if (!Object.prototype.hasOwnProperty.call(remoteBindings, bk)) continue;
-                  if (String(remoteBindings[bk].trackId || "") === wantedT) { bindingForT = remoteBindings[bk]; break; }
+            // Candidate source 2: known receiver tracks list (best-effort).
+            var rts = getAllReceiverTracks();
+            if (Array.isArray(rts)) {
+              for (var rt = 0; rt < rts.length; rt++) {
+                var r = rts[rt];
+                if (!r || !r.id) continue;
+                addCandidate(r.id, "receiver_tracks", false);
+              }
+            }
+
+            // Candidate source 3: inbound RTP identifier (decisive when RTP is flowing).
+            if (inboundId) addCandidate(inboundId, "inbound_rtp", true);
+
+            // Rank candidates deterministically.
+            candidates.sort(function (a, b) {
+              // Hard bias: if RTP is flowing, prefer the inbound RTP track id.
+              if (inboundDelta > 0) {
+                var aIsInbound = (a.id === inboundId);
+                var bIsInbound = (b.id === inboundId);
+                if (aIsInbound !== bIsInbound) return aIsInbound ? -1 : 1;
+              }
+              // Prefer recvonly (remote audio) over sendrecv (often local).
+              if (a.recvonly !== b.recvonly) return a.recvonly ? -1 : 1;
+              // Prefer higher pre-mixer energy.
+              if (a.energy !== b.energy) return (b.energy - a.energy);
+              // Tie-break: keep current selection stable.
+              if (rxTrackSelection.selectedTrackId) {
+                if (a.id === rxTrackSelection.selectedTrackId && b.id !== rxTrackSelection.selectedTrackId) return -1;
+                if (b.id === rxTrackSelection.selectedTrackId && a.id !== rxTrackSelection.selectedTrackId) return 1;
+              }
+              // Final tie-break: lexical.
+              return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+            });
+
+            var top = candidates.length ? candidates[0] : null;
+            var topId = top ? String(top.id) : "";
+
+            // Emit candidates telemetry at most every ~2s unless selection changes.
+            if (now - (rxTrackSelection.lastCandidatesSentAtMs || 0) >= 1900) {
+              rxTrackSelection.lastCandidatesSentAtMs = now;
+              var top3 = candidates.slice(0, 3).map(function (c) { return { id: c.id, energy: c.energy, recvonly: c.recvonly, source: c.source }; });
+              sendToNode({
+                type: "track_candidates",
+                ts: now,
+                inbound_track_identifier: inboundId,
+                inbound_mid: inboundMid,
+                inbound_bytes_delta: inboundDelta,
+                selected_track_id: rxTrackSelection.selectedTrackId || "",
+                top: topId,
+                candidates: top3
+              });
+            }
+
+            // Confidence / hysteresis.
+            if (topId && topId === rxTrackSelection.candidateTrackId) {
+              rxTrackSelection.candidateWins = (rxTrackSelection.candidateWins || 0) + 1;
+            } else {
+              rxTrackSelection.candidateTrackId = topId;
+              rxTrackSelection.candidateWins = topId ? 1 : 0;
+            }
+
+            var wantCommit = false;
+            var isInitial = !rxTrackSelection.selectedTrackId;
+            if (topId) {
+              if (isInitial && rxTrackSelection.candidateWins >= RX_SELECT_K) wantCommit = true;
+              if (!isInitial && topId !== rxTrackSelection.selectedTrackId && rxTrackSelection.candidateWins >= RX_REBIND_M) wantCommit = true;
+            }
+
+            if (wantCommit) {
+              var prev = rxTrackSelection.selectedTrackId || "";
+              rxTrackSelection.selectedTrackId = topId;
+              sendToNode({
+                type: "track_selected",
+                ts: now,
+                prev_track_id: prev,
+                selected_track_id: topId,
+                candidate_wins: rxTrackSelection.candidateWins,
+                required_initial: RX_SELECT_K,
+                required_rebind: RX_REBIND_M,
+                reason: isInitial ? "initial_commit" : "rebind_commit",
+                inbound_track_identifier: inboundId,
+                inbound_mid: inboundMid,
+                inbound_bytes_delta: inboundDelta,
+                top_candidates: candidates.slice(0, 3).map(function (c) { return { id: c.id, energy: c.energy, recvonly: c.recvonly, source: c.source }; })
+              });
+            }
+
+            // Apply (best-effort): ensure the selected track is attached and (if needed) rebound to receiver.
+            // Avoid aggressive churn with a short cooldown.
+            var sel = rxTrackSelection.selectedTrackId || "";
+            if (sel) {
+              var now2 = now;
+              var canRebind = (now2 - (rxTrackSelection.lastRebindAtMs || 0)) > RX_REBIND_COOLDOWN_MS;
+
+              // Find the binding for this trackId (wrapper id) if present.
+              var bindingForSel = null;
+              for (var bk2 in remoteBindings) {
+                if (!Object.prototype.hasOwnProperty.call(remoteBindings, bk2)) continue;
+                var bb2 = remoteBindings[bk2];
+                if (bb2 && String(bb2.trackId || "") === sel) { bindingForSel = bb2; break; }
+              }
+
+              // If not bound yet, try to (re)attach by scanning participants for a matching underlying native track id.
+              if (!bindingForSel && canRebind) {
+                if (rebindToInboundTrackIdentifier(sel)) {
+                  rxTrackSelection.lastRebindAtMs = now2;
                 }
-                if (bindingForT && (bindingForT.boundVia || "wrapper") === "wrapper") {
-                  rebindMixerToReceiverTrack(wantedT, stats.inbound_mid || "");
+              }
+
+              // If bound via wrapper (or premix is silent during active RTP), rebind to receiver track.
+              bindingForSel = bindingForSel || null;
+              if (bindingForSel) {
+                var premixForSel = (stats.pre_mixer_by_track_id && stats.pre_mixer_by_track_id[sel]) ? (stats.pre_mixer_by_track_id[sel] || 0) : 0;
+                var boundVia = String(bindingForSel.boundVia || "wrapper");
+                var shouldRebindReceiver = false;
+                if (boundVia === "wrapper") shouldRebindReceiver = true;
+                // If RTP is flowing but premix is near-silent, attempt receiver rebind even if we *think* we're already receiver.
+                if (inboundDelta > 0 && sel === inboundId && premixForSel < 200) shouldRebindReceiver = true;
+                if (shouldRebindReceiver && canRebind) {
+                  if (rebindMixerToReceiverTrack(sel, inboundMid)) {
+                    rxTrackSelection.lastRebindAtMs = now2;
+                  }
                 }
               }
             }
