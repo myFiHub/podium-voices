@@ -18,6 +18,8 @@ import { recordTurnMetrics } from "../metrics";
 import { SafetyGate } from "./safety";
 import { logger } from "../logging";
 import { flushSentences, DEFAULT_MAX_CHARS_PER_CHUNK } from "./sentence-splitter";
+import { chooseFiller, streamFillerClip } from "./fillerEngine";
+import type { FillerEngineConfig } from "./fillerEngine";
 
 const DEFAULT_ASR_TIMEOUT_MS = 20_000;
 const DEFAULT_LLM_TIMEOUT_MS = 25_000;
@@ -53,6 +55,10 @@ export interface OrchestratorConfig {
   timeouts?: { asrMs?: number; llmMs?: number };
   /** Multi-agent: Turn Coordinator client. When set, agent syncs memory and requests turn before replying. */
   coordinatorClient?: ICoordinatorClient;
+  /** Optional filler engine config for latency masking (play short clip before main reply). */
+  fillerConfig?: FillerEngineConfig;
+  /** Persona ID for filler selection (e.g. "default", "hype"). */
+  personaId?: string;
 }
 
 export class Orchestrator {
@@ -61,8 +67,12 @@ export class Orchestrator {
   private processing = false;
   private speaking = false;
   private cancelTts = false;
+  /** When barge-in was signaled (for bargeInStopLatencyMs). */
+  private bargeInAt: number | undefined;
   private pendingSegment: Buffer | null = null;
   private activeStreamingSession: ReturnType<NonNullable<IASR["createStreamingSession"]>> | null = null;
+  /** Set when ASR emits end_of_turn_predicted so VAD path skips this segment. */
+  private turnHandledByAsrEvent = false;
   /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
   private vadSpeechLogged = false;
   private readonly getFeedbackSentiment: () => "cheer" | "boo" | "neutral";
@@ -74,6 +84,10 @@ export class Orchestrator {
   private readonly backendMode: "asr-llm-tts" | "personaplex";
   private readonly personaplexClient?: PersonaPlexClient;
   private readonly personaplexFallbackToLlm: boolean;
+  private readonly fillerConfig?: FillerEngineConfig;
+  private readonly personaId: string;
+  /** Set when main TTS starts so filler playback aborts. */
+  private fillerAbort = false;
 
   constructor(
     private readonly asr: IASR,
@@ -100,6 +114,15 @@ export class Orchestrator {
     this.backendMode = config.conversationBackendMode ?? "asr-llm-tts";
     this.personaplexClient = config.personaplexClient;
     this.personaplexFallbackToLlm = Boolean(config.personaplexFallbackToLlm);
+    this.fillerConfig = config.fillerConfig;
+    this.personaId = config.personaId ?? "default";
+  }
+
+  /** Capture barge-in stop latency (ms) and clear; call when recording turn metrics. */
+  private captureBargeInLatency(): number | undefined {
+    const at = this.bargeInAt;
+    this.bargeInAt = undefined;
+    return at !== undefined ? Date.now() - at : undefined;
   }
 
   /**
@@ -136,9 +159,19 @@ export class Orchestrator {
         // Do not start streaming while speaking; queued/barge-in segments remain batch-only in MVP.
         if (!this.speaking && !this.activeStreamingSession && typeof this.asr.createStreamingSession === "function") {
           try {
-            this.activeStreamingSession = this.asr.createStreamingSession({ sampleRateHz: VAD.getSampleRate() });
+            const opts: { sampleRateHz: number; onTurnEvent?: (event: import("../adapters/asr/types").TurnEvent) => void } = {
+              sampleRateHz: VAD.getSampleRate(),
+            };
+            opts.onTurnEvent = (event) => {
+              if (event === "end_of_turn_predicted" && this.activeStreamingSession && !this.processing && !this.speaking) {
+                this.turnHandledByAsrEvent = true;
+                const session = this.activeStreamingSession;
+                this.activeStreamingSession = null;
+                void this.finalizeStreamingSessionAndTurn(session);
+              }
+            };
+            this.activeStreamingSession = this.asr.createStreamingSession(opts);
             // Push all buffered audio so far so the beginning of speech is included.
-            // This may include some leading silence, which is acceptable for MVP.
             this.activeStreamingSession.push(combined);
             logger.info({ event: "ASR_STREAM_SESSION_STARTED" }, "Streaming ASR session started");
           } catch (err) {
@@ -150,9 +183,16 @@ export class Orchestrator {
       // Barge-in: if user speech is detected while bot is speaking, cancel TTS immediately.
       if (this.speaking && result.isSpeech && !this.cancelTts) {
         this.cancelTts = true;
+        this.bargeInAt = Date.now();
         this.callbacks.onBargeIn?.({ reason: "user_speech" });
       }
       if (result.endOfTurn && result.segment && result.segment.length > 0) {
+        if (this.turnHandledByAsrEvent) {
+          this.turnHandledByAsrEvent = false;
+          this.vadSpeechLogged = false;
+          this.audioBuffer = combined.length > offset ? [combined.subarray(offset)] : [];
+          return;
+        }
         this.vadSpeechLogged = false;
         this.audioBuffer = combined.length > offset ? [combined.subarray(offset)] : [];
         const segmentMs = Math.round((result.segment.length / frameSize) * 20);
@@ -185,6 +225,21 @@ export class Orchestrator {
       }
     }
     this.audioBuffer = offset > 0 ? [combined.subarray(offset)] : [combined];
+  }
+
+  /** Finalize streaming ASR session and run turn (called when adapter emits end_of_turn_predicted). */
+  private async finalizeStreamingSessionAndTurn(
+    session: ReturnType<NonNullable<IASR["createStreamingSession"]>>
+  ): Promise<void> {
+    if (this.processing) return;
+    const asrStart = Date.now();
+    try {
+      const transcriptResult = await withTimeout(session.end(), this.timeouts.asrMs, "ASR(stream)");
+      const asrLatencyMs = Date.now() - asrStart;
+      await this.startTurnFromTranscript(transcriptResult, asrLatencyMs);
+    } catch (err) {
+      logger.warn({ event: "ASR_STREAM_END_FAILED", err: (err as Error).message }, "Streaming ASR turn event finalize failed");
+    }
   }
 
   private async startTurn(segment: Buffer): Promise<void> {
@@ -265,6 +320,7 @@ export class Orchestrator {
       this.callbacks.onUserTranscript?.(userSafe.text);
     }
 
+    let coordinatorTurnId: string | undefined;
     if (this.coordinatorClient && userSafe.text.length > 0) {
       const turns = await this.coordinatorClient.syncRecentTurns();
       const flatTurns: Array<{ role: "user" | "assistant"; content: string }> = [];
@@ -275,8 +331,10 @@ export class Orchestrator {
       if (typeof this.memory.replaceTurns === "function") {
         this.memory.replaceTurns(flatTurns);
       }
-      const allowed = await this.coordinatorClient.requestTurn(userSafe.text);
-      if (!allowed) return;
+      const stubBid = { score: 5, intent: "answer", confidence: 0.5, target: null as string | null };
+      const turnResult = await this.coordinatorClient.requestTurn(userSafe.text, stubBid);
+      if (!turnResult.allowed) return;
+      coordinatorTurnId = turnResult.turnId;
     }
 
     if (userSafe.text.length > 0) {
@@ -304,6 +362,7 @@ export class Orchestrator {
 
     const ppStart = Date.now();
     let turn: Awaited<ReturnType<PersonaPlexClient["runTurn"]>> | undefined;
+    let ppAssistantMessage = "";
     try {
       turn = await this.personaplexClient.runTurn({ turnId: utteranceId, userPcm16k: audioSegment, textPrompt });
       for await (const buf of turn.audio48k) {
@@ -332,16 +391,9 @@ export class Orchestrator {
 
       const assistantSafe = this.safety.sanitizeAssistantReply(assistantText);
       if (assistantSafe.allowed && assistantSafe.text.trim().length > 0) {
+        ppAssistantMessage = assistantSafe.text;
         this.memory.append("assistant", assistantSafe.text);
         this.callbacks.onAgentReply?.(assistantSafe.text);
-        if (this.coordinatorClient && userSafe.text.length > 0) {
-          await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
-        }
-      } else {
-        // Still end coordinator turn if we were allowed to speak; use empty assistant.
-        if (this.coordinatorClient && userSafe.text.length > 0) {
-          await this.coordinatorClient.endTurn(userSafe.text, "");
-        }
       }
     } catch (err) {
       // Absorb turn.text rejection so it does not become an unhandled rejection and crash the process.
@@ -354,7 +406,7 @@ export class Orchestrator {
         // Release the coordinator turn so runTurnCore's requestTurn can succeed (we were granted the turn
         // but never called endTurn because PersonaPlex threw; without this, coordinator would return allowed: false).
         if (this.coordinatorClient && userSafe.text.length > 0) {
-          await this.coordinatorClient.endTurn(userSafe.text, "").catch(() => {});
+          await this.coordinatorClient.endTurn(userSafe.text, "", coordinatorTurnId).catch(() => {});
         }
         // If we have a usable transcript, fall back to the standard path without re-transcribing.
         await this.runTurnCore({ transcriptResult, asrLatencyMs, turnStart });
@@ -362,16 +414,20 @@ export class Orchestrator {
       }
     } finally {
       this.speaking = false;
+      if (this.coordinatorClient && userSafe.text.length > 0 && coordinatorTurnId !== undefined) {
+        await this.coordinatorClient.endTurn(userSafe.text, ppAssistantMessage, coordinatorTurnId).catch(() => {});
+      }
     }
 
     const personaplexLatencyMs = Date.now() - ppStart;
     const endOfUserSpeechToBotAudioMs = firstAudioAt !== undefined ? firstAudioAt - turnStart : undefined;
     recordTurnMetrics({
       asrLatencyMs,
-      // Map PersonaPlex response time to the existing metrics fields.
       llmLatencyMs: firstAudioAt !== undefined ? firstAudioAt - ppStart : personaplexLatencyMs,
       ttsLatencyMs: personaplexLatencyMs,
       endOfUserSpeechToBotAudioMs,
+      bargeInStopLatencyMs: this.captureBargeInLatency(),
+      turnId: coordinatorTurnId,
     });
 
     await this.maybeRunPendingTurn();
@@ -388,6 +444,8 @@ export class Orchestrator {
     if (!userSafe.allowed || userSafe.text.length === 0) return;
     this.callbacks.onUserTranscript?.(userSafe.text);
 
+    let coordinatorTurnId: string | undefined;
+    let winnerSelectionReason: string | undefined;
     if (this.coordinatorClient) {
       const turns = await this.coordinatorClient.syncRecentTurns();
       const flatTurns: Array<{ role: "user" | "assistant"; content: string }> = [];
@@ -398,10 +456,15 @@ export class Orchestrator {
       if (typeof this.memory.replaceTurns === "function") {
         this.memory.replaceTurns(flatTurns);
       }
-      const allowed = await this.coordinatorClient.requestTurn(userSafe.text);
-      if (!allowed) return;
+      const stubBid = { score: 5, intent: "answer", confidence: 0.5, target: null as string | null };
+      const turnResult = await this.coordinatorClient.requestTurn(userSafe.text, stubBid);
+      if (!turnResult.allowed) return;
+      coordinatorTurnId = turnResult.turnId;
+      winnerSelectionReason = turnResult.winnerSelectionReason;
     }
 
+    let assistantMessageForCoordinator = "";
+    try {
     this.memory.append("user", userSafe.text);
     const snapshot = this.memory.getSnapshot();
     const feedbackSentiment = this.getFeedbackSentiment();
@@ -412,6 +475,24 @@ export class Orchestrator {
       sentiment: feedbackSentiment,
       behaviorLevel: feedbackBehaviorLevel,
     });
+
+    this.fillerAbort = false;
+    const fillerChoice = this.fillerConfig ? chooseFiller(this.fillerConfig, this.personaId) : null;
+    if (fillerChoice?.type === "clip") {
+      const fillerId = `filler-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      void (async () => {
+        try {
+          this.callbacks.onTtsStart?.({ utteranceId: fillerId, source: "filler", textLength: 0 });
+          for await (const buf of streamFillerClip(fillerChoice.path, 4096, () => this.fillerAbort)) {
+            if (this.fillerAbort) break;
+            if (buf.length > 0) this.callbacks.onTtsAudio?.(buf, { utteranceId: fillerId, source: "filler" });
+          }
+          this.callbacks.onTtsEnd?.({ utteranceId: fillerId, source: "filler" });
+        } catch (err) {
+          logger.warn({ event: "FILLER_PLAYBACK_FAILED", err: (err as Error).message }, "Filler playback failed");
+        }
+      })();
+    }
 
     const llmStart = Date.now();
     let fullText = "";
@@ -450,6 +531,7 @@ export class Orchestrator {
                   if (firstTtsChunkAt === undefined) firstTtsChunkAt = Date.now();
                   if (!ttsStarted) {
                     ttsStarted = true;
+                    this.fillerAbort = true;
                     this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: sentenceSafe.text.trim().length });
                   }
                   this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
@@ -460,10 +542,18 @@ export class Orchestrator {
           if (this.cancelTts) {
             llmLatencyMs = Date.now() - llmStart;
             this.speaking = false;
-            recordTurnMetrics({ asrLatencyMs, llmLatencyMs, endOfUserSpeechToBotAudioMs: firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined });
+            recordTurnMetrics({
+              asrLatencyMs,
+              llmLatencyMs,
+              endOfUserSpeechToBotAudioMs: firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined,
+              bargeInStopLatencyMs: this.captureBargeInLatency(),
+              turnId: coordinatorTurnId,
+              winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
+            });
             await this.maybeRunPendingTurn();
             return;
           }
+          /* fall through to normal completion; finally will call endTurn */
           buffer = buffer.trim();
           if (buffer.length > 0) {
             const sentenceSafe = this.safety.sanitizeAssistantReply(buffer);
@@ -476,6 +566,7 @@ export class Orchestrator {
                   if (firstTtsChunkAt === undefined) firstTtsChunkAt = Date.now();
                   if (!ttsStarted) {
                     ttsStarted = true;
+                    this.fillerAbort = true;
                     this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: sentenceSafe.text.trim().length });
                   }
                   this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
@@ -500,21 +591,25 @@ export class Orchestrator {
             llmLatencyMs,
             ttsLatencyMs,
             endOfUserSpeechToBotAudioMs: firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined,
+            bargeInStopLatencyMs: this.captureBargeInLatency(),
+            turnId: coordinatorTurnId,
+            winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
           });
           await this.maybeRunPendingTurn();
           return;
         }
+        assistantMessageForCoordinator = assistantSafe.text;
         this.memory.append("assistant", assistantSafe.text);
         this.callbacks.onAgentReply?.(assistantSafe.text);
-        if (this.coordinatorClient) {
-          await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
-        }
         const endOfUserSpeechToBotAudioMs = firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined;
         recordTurnMetrics({
           asrLatencyMs,
           llmLatencyMs,
           ttsLatencyMs,
           endOfUserSpeechToBotAudioMs,
+          bargeInStopLatencyMs: this.captureBargeInLatency(),
+          turnId: coordinatorTurnId,
+          winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
         });
         await this.maybeRunPendingTurn();
         return;
@@ -526,11 +621,9 @@ export class Orchestrator {
     llmLatencyMs = Date.now() - llmStart;
     const assistantSafe = this.safety.sanitizeAssistantReply(fullText);
     if (!assistantSafe.allowed || !assistantSafe.text.trim()) return;
+    assistantMessageForCoordinator = assistantSafe.text;
     this.memory.append("assistant", assistantSafe.text);
     this.callbacks.onAgentReply?.(assistantSafe.text);
-    if (this.coordinatorClient) {
-      await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
-    }
     this.processing = false;
     this.speaking = true;
     this.cancelTts = false;
@@ -546,6 +639,7 @@ export class Orchestrator {
           if (firstTtsChunkAt === undefined) firstTtsChunkAt = Date.now();
           if (!ttsStarted) {
             ttsStarted = true;
+            this.fillerAbort = true;
             this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: assistantSafe.text.trim().length });
           }
           this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
@@ -564,8 +658,16 @@ export class Orchestrator {
       llmLatencyMs,
       ttsLatencyMs,
       endOfUserSpeechToBotAudioMs,
+      bargeInStopLatencyMs: this.captureBargeInLatency(),
+      turnId: coordinatorTurnId,
+      winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
     });
     await this.maybeRunPendingTurn();
+    } finally {
+      if (this.coordinatorClient && coordinatorTurnId !== undefined) {
+        await this.coordinatorClient.endTurn(userSafe.text, assistantMessageForCoordinator, coordinatorTurnId).catch(() => {});
+      }
+    }
   }
 
   /**

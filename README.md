@@ -104,7 +104,7 @@ See `.env.example` for all variables.
 
 ### Multi-agent (Phase 1)
 
-Phase 1 lets **two or more AI agents** join the **same** Podium Outpost room with distinct personas and no overlapping speech. Each agent runs in its **own process** (one pipeline per agent). A separate **Turn Coordinator** process decides which agent may respond to each user utterance (round-robin or by name in the transcript) and stores shared conversation turns so all agents see the same recent dialogue.
+Phase 1 lets **two or more AI agents** join the **same** Podium Outpost room with distinct personas and no overlapping speech. Each agent runs in its **own process** (one pipeline per agent). A separate **Turn Coordinator** process acts as a **floor manager**: it grants **lease-based** turns (time-bounded; agents must call `end-turn` with the granted `turnId`), picks one agent per user utterance (by **name in the transcript** first, then **round-robin** or optional **importance-score auction**), and stores shared conversation turns so all agents see the same recent dialogue.
 
 **You run three (or more) processes:** one coordinator, then one agent process per AI. The coordinator does **not** load `.env.local`; you set its env vars in the shell when you start it. Each agent process loads `.env.local` (or you override vars in the shell per terminal).
 
@@ -121,7 +121,7 @@ Start from your existing single-agent `.env.local`. For multi-agent you **add** 
 | **Add** `COORDINATOR_URL` | `http://localhost:3001` | Required so this process talks to the coordinator. |
 | **Add** `AGENT_ID` | `alex` or `jamie` | Unique id per agent (required when using coordinator). |
 | **Add** `AGENT_DISPLAY_NAME` | `Alex` or `Jamie` | Name-addressing (e.g. “Alex, what do you think?”). |
-| **Change** `PERSONA_ID` per agent | `default` vs `hype` | Different tone/style per agent (recommended). |
+| **Change** `PERSONA_ID` per agent | `default` vs `hype` | Different tone/style per agent (recommended); also used for filler clips when present under `assets/fillers/<persona>/`. |
 | **Change** `PODIUM_TOKEN` per agent | Token 1 vs Token 2 | Use a **separate** Podium token per agent so they appear as two different participants in the room. |
 | **Optional** `CONVERSATION_BACKEND` per agent | `asr-llm-tts` vs `personaplex` | When starting agents manually, set per terminal for mix-and-match; PersonaPlex agents also need `PERSONAPLEX_SERVER_URL`, `PERSONAPLEX_VOICE_PROMPT`. |
 
@@ -133,19 +133,26 @@ Keep **the same** for both agents (unless mixing backends): `PODIUM_OUTPOST_UUID
 |-----|---------|--------|
 | `COORDINATOR_PORT` | `3001` | Port the coordinator HTTP server listens on. |
 | `COORDINATOR_AGENTS` | `alex:Alex,jamie:Jamie` | Optional: round-robin order and name-addressing. |
+| `COORDINATOR_COLLECTION_MS` | `300` | Optional: ms to collect requests before picking winner. Default 300. |
+| `COORDINATOR_LEASE_MS` | `120000` | Optional: lease duration (ms) for a granted turn. Default 2 min. |
+| `COORDINATOR_USE_AUCTION` | `1` or `true` | Optional: use importance-score auction instead of round-robin when no name in transcript. |
 
 ---
+
+#### Running the standard multi-agent pipeline (ASR→LLM→TTS)
+
+Use this when **all agents** use the standard pipeline (VAD → ASR → LLM → TTS). Each agent needs the same room (`PODIUM_OUTPOST_UUID`), API keys, and Jitsi settings; only coordinator URL, agent identity, persona, and (optionally) Podium token differ per agent.
 
 **How to run (two agents)**
 
 1. **Build once:** `npm run build`
 
 2. **Terminal 1 – Start the coordinator**  
-   The coordinator does not read `.env.local`; pass vars in the shell:
+   The coordinator does not read `.env.local`; pass env in the shell:
    ```bash
    COORDINATOR_PORT=3001 COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run start:coordinator
    ```
-   Leave this running.
+   Leave this running. Optional: `COORDINATOR_COLLECTION_MS=300`, `COORDINATOR_LEASE_MS=120000`, `COORDINATOR_USE_AUCTION=1`.
 
 3. **Terminal 2 – Agent 1 (e.g. Alex)**  
    Your existing `.env.local` is loaded. Add coordinator and agent identity by overriding in the shell (or add them to `.env.local` and override only the second agent in the next step):
@@ -161,19 +168,20 @@ Keep **the same** for both agents (unless mixing backends): `PODIUM_OUTPOST_UUID
    ```
    Replace `<your_second_podium_token>` with the second account’s token. All other vars (outpost UUID, API keys, etc.) come from `.env.local`.
 
-**Optional launcher:** To start coordinator and all agents from one command:
+**Optional launcher (single env for all agents):**
 ```bash
 COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run run-multi-agent
 ```
-See [scripts/run-multi-agent.js](scripts/run-multi-agent.js). You still need a second `PODIUM_TOKEN` for the second agent (e.g. via a config file or env).
+See [scripts/run-multi-agent.js](scripts/run-multi-agent.js). A second `PODIUM_TOKEN` for the second agent may be required via config or env.
 
 **Behavior**
 
-- When a user speaks, every agent’s pipeline runs ASR and gets the transcript. Each agent asks the coordinator for permission to respond. The coordinator picks **one** agent (by name in the transcript if present, otherwise round-robin) and grants the turn; only that agent runs LLM + TTS. The others skip replying.
-- After the chosen agent replies, it calls `end-turn` so the coordinator clears the “current speaker” and appends the turn to shared history. The next user utterance can then be assigned to another agent.
+- When a user speaks, every agent's pipeline runs ASR and gets the transcript. Each agent asks the coordinator for permission to respond (and may send an optional **bid** when auction is enabled). The coordinator picks **one** agent (by **name in the transcript** if present, otherwise by **round-robin** or **auction**), grants a **lease** (turnId + leaseMs), and only that agent runs LLM + TTS; the others skip.
+- The chosen agent must call **end-turn** with the granted **turnId** when done (or on error in `finally`); the coordinator clears the floor and appends the turn to shared history. If the agent never calls end-turn, the lease **auto-expires** after `COORDINATOR_LEASE_MS`.
+- **Fillers (optional):** If `assets/fillers/<PERSONA_ID>/` contains a manifest and clips (see [assets/fillers/README.md](assets/fillers/README.md)), the pipeline can play a short filler clip before the main reply to reduce perceived latency (TTFA).
 - **Single-agent mode:** Leave `COORDINATOR_URL` and `AGENT_ID` unset; run `npm start` as usual with one process.
 
-For a full checklist and optional per-agent `.env` files, see **[docs/MULTI_AGENT_PHASE1.md](docs/MULTI_AGENT_PHASE1.md)**.
+For a full checklist and optional per-agent `.env` files, see **[docs/MULTI_AGENT_PHASE1.md](docs/MULTI_AGENT_PHASE1.md)**. For the low-latency architecture (leases, auction, fillers, streaming contracts), see **[docs/LOW_LATENCY_CASCADE_PLAN.md](docs/LOW_LATENCY_CASCADE_PLAN.md)**.
 
 ### Response latency and tuning
 

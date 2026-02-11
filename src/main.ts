@@ -3,6 +3,7 @@
  * Use mock room when PODIUM_TOKEN or PODIUM_OUTPOST_UUID are not set.
  */
 
+import * as path from "path";
 import { loadConfig, validateConfig } from "./config";
 import { createASR } from "./adapters/asr";
 import { createLLM } from "./adapters/llm";
@@ -96,6 +97,8 @@ async function main(): Promise<void> {
     getFeedbackBehaviorLevel: () => feedbackCollector.getBehaviorLevel(persona.feedbackThresholds),
     promptManager,
     coordinatorClient,
+    fillerConfig: { basePath: path.join(process.cwd(), "assets", "fillers") },
+    personaId: config.agent.personaId,
   }, {
     onUserTranscript: (text) => {
       const shouldLogText = (() => {

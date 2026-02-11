@@ -1,0 +1,5 @@
+{
+  "clips": [
+    { "id": "ack", "path": "ack.wav", "lengthMs": 300, "energy": "low", "useCase": "acknowledgment" }
+  ]
+}

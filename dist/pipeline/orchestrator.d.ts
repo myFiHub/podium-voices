@@ -11,6 +11,7 @@ import type { ICoordinatorClient } from "../coordinator/client";
 import type { PipelineCallbacks } from "./types";
 import { PromptManager } from "../prompts/prompt-manager";
 import { SafetyGate } from "./safety";
+import type { FillerEngineConfig } from "./fillerEngine";
 export interface OrchestratorConfig {
     vadSilenceMs: number;
     /** Energy-based VAD threshold (when webrtcvad unavailable); lower = more sensitive. */
@@ -38,6 +39,10 @@ export interface OrchestratorConfig {
     };
     /** Multi-agent: Turn Coordinator client. When set, agent syncs memory and requests turn before replying. */
     coordinatorClient?: ICoordinatorClient;
+    /** Optional filler engine config for latency masking (play short clip before main reply). */
+    fillerConfig?: FillerEngineConfig;
+    /** Persona ID for filler selection (e.g. "default", "hype"). */
+    personaId?: string;
 }
 export declare class Orchestrator {
     private readonly asr;
@@ -51,8 +56,12 @@ export declare class Orchestrator {
     private processing;
     private speaking;
     private cancelTts;
+    /** When barge-in was signaled (for bargeInStopLatencyMs). */
+    private bargeInAt;
     private pendingSegment;
     private activeStreamingSession;
+    /** Set when ASR emits end_of_turn_predicted so VAD path skips this segment. */
+    private turnHandledByAsrEvent;
     /** Log VAD_SPEECH_STARTED only once per speech run (debug). */
     private vadSpeechLogged;
     private readonly getFeedbackSentiment;
@@ -64,12 +73,20 @@ export declare class Orchestrator {
     private readonly backendMode;
     private readonly personaplexClient?;
     private readonly personaplexFallbackToLlm;
+    private readonly fillerConfig?;
+    private readonly personaId;
+    /** Set when main TTS starts so filler playback aborts. */
+    private fillerAbort;
     constructor(asr: IASR, llm: ILLM, tts: ITTS, memory: ISessionMemory, config: OrchestratorConfig, callbacks?: PipelineCallbacks);
+    /** Capture barge-in stop latency (ms) and clear; call when recording turn metrics. */
+    private captureBargeInLatency;
     /**
      * Push raw audio (16kHz mono 16-bit PCM for VAD). Call repeatedly with chunks.
      * When end-of-turn is detected, runs ASR -> memory -> LLM -> TTS and invokes onTtsAudio.
      */
     pushAudio(chunk: Buffer): Promise<void>;
+    /** Finalize streaming ASR session and run turn (called when adapter emits end_of_turn_predicted). */
+    private finalizeStreamingSessionAndTurn;
     private startTurn;
     private startTurnFromTranscript;
     private maybeRunPendingTurn;

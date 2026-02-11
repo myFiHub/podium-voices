@@ -1,5 +1,5 @@
 node_modules
 .env.local
+.env.multi-agent
 *.local
-.env.local
 /logs

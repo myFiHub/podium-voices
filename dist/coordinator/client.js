@@ -76,32 +76,35 @@ class CoordinatorClient {
             return [];
         }
     }
-    /** POST /request-turn then poll GET /turn-decision until decided; return whether this agent is allowed. */
-    async requestTurn(transcript) {
+    /** POST /request-turn then poll GET /turn-decision until decided; optional bid for auction. */
+    async requestTurn(transcript, bid) {
         const requestId = computeRequestId(transcript);
+        const body = {
+            agentId: this.agentId,
+            displayName: this.displayName,
+            transcript,
+            requestId,
+        };
+        if (bid != null)
+            body.bid = bid;
         let postRes;
         try {
             postRes = await this.fetch("/request-turn", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    agentId: this.agentId,
-                    displayName: this.displayName,
-                    transcript,
-                    requestId,
-                }),
+                body: JSON.stringify(body),
             });
         }
         catch {
-            return false;
+            return { allowed: false };
         }
         if (!postRes.ok)
-            return false;
+            return { allowed: false };
         const postData = (await postRes.json());
         if (postData.pending === false && postData.allowed === false)
-            return false;
+            return { allowed: false };
         if (postData.allowed === true)
-            return true;
+            return { allowed: true };
         const deadline = Date.now() + this.decisionTimeoutMs;
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, this.pollIntervalMs));
@@ -109,21 +112,30 @@ class CoordinatorClient {
             if (!getRes.ok)
                 continue;
             const getData = (await getRes.json());
-            if (getData.decided)
-                return getData.allowed === true;
+            if (getData.decided) {
+                return {
+                    allowed: getData.allowed === true,
+                    turnId: getData.turnId,
+                    leaseMs: getData.leaseMs,
+                    winnerSelectionReason: getData.winnerSelectionReason,
+                };
+            }
         }
-        return false;
+        return { allowed: false };
     }
-    /** POST /end-turn: notify coordinator we finished our reply (clears currentSpeaker, appends turn). */
-    async endTurn(userMessage, assistantMessage) {
+    /** POST /end-turn: notify coordinator we finished our reply. Pass turnId when present (lease-based). */
+    async endTurn(userMessage, assistantMessage, turnId) {
+        const body = {
+            agentId: this.agentId,
+            userMessage,
+            assistantMessage,
+        };
+        if (turnId != null)
+            body.turnId = turnId;
         await this.fetch("/end-turn", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                agentId: this.agentId,
-                userMessage,
-                assistantMessage,
-            }),
+            body: JSON.stringify(body),
         });
     }
     async fetch(path, init) {

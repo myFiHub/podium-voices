@@ -28,6 +28,8 @@ export interface StreamingTranscriptPart {
     /** Optional language code. */
     language?: string;
 }
+/** Turn-related events from streaming ASR (when supported). */
+export type TurnEvent = "speech_start" | "speech_end" | "end_of_turn_predicted";
 export interface StreamingSessionOptions {
     /**
      * Sample rate of PCM pushed into the session.
@@ -39,6 +41,11 @@ export interface StreamingSessionOptions {
      * Consumers should treat these as informational; final transcript is returned by `end()`.
      */
     onPartial?: (part: StreamingTranscriptPart) => void;
+    /**
+     * Optional: callbacks for turn detection (e.g. end_of_turn_predicted).
+     * When supported, orchestrator can finalize ASR earlier than VAD silence.
+     */
+    onTurnEvent?: (event: TurnEvent) => void;
 }
 /**
  * Streaming ASR session created by adapters that support it.

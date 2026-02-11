@@ -580,9 +580,17 @@ class JitsiBrowserBot {
         // decode timing or multi-participant track selection, while post_mixer still carries remote audio.
         // Within recvGraceAfterBindMs of a track_selected or track_rebind_receiver we do not fail the contract
         // for post_mixer 0, to avoid false WRONG_TRACK when the new binding has not yet produced decoded audio.
+        // Prefer browser-provided ms_since_last_track_bind so grace works regardless of Node message order (probe can arrive before track_rebind_receiver).
         const threshold = this.preMixerPassThreshold;
         const nowForContract = Date.now();
-        const withinGraceAfterBind = this.recvGraceAfterBindMs > 0 && this.lastTrackSelectionOrRebindAt > 0 && nowForContract - this.lastTrackSelectionOrRebindAt < this.recvGraceAfterBindMs;
+        const msSinceBindFromProbe = typeof msg.ms_since_last_track_bind === "number" ? msg.ms_since_last_track_bind : undefined;
+        const msSinceBindFromNode = this.lastTrackSelectionOrRebindAt > 0 ? nowForContract - this.lastTrackSelectionOrRebindAt : undefined;
+        const effectiveMsSinceBind = msSinceBindFromProbe !== undefined
+            ? msSinceBindFromProbe
+            : msSinceBindFromNode !== undefined
+                ? msSinceBindFromNode
+                : Infinity;
+        const withinGraceAfterBind = this.recvGraceAfterBindMs > 0 && effectiveMsSinceBind < this.recvGraceAfterBindMs;
         if (inboundBytesDelta > 0) {
             this.consecutiveNoInboundProbes = 0;
             const premixOk = preMix > threshold;
@@ -600,7 +608,7 @@ class JitsiBrowserBot {
                         audio_inbound_bytes_delta: inboundBytesDelta,
                         pre_mixer_max_abs: preMix,
                         post_mixer_max_abs: postMix,
-                        ms_since_bind: nowForContract - this.lastTrackSelectionOrRebindAt,
+                        ms_since_bind: effectiveMsSinceBind,
                         grace_ms: this.recvGraceAfterBindMs,
                     }, "Receive contract: post_mixer 0 within grace after track bind (skipping failure)");
                 }

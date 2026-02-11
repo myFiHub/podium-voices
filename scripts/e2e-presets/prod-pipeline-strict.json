@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "prod-pipeline-strict",
+  "description": "ASR + reply gates, stricter timeouts, lease expiry. For validation.",
+  "stimulus": { "mode": "tone" },
+  "timeouts": { "totalMs": 180000, "joinMs": 60000, "recvMs": 90000, "stabilityMs": 15000 },
+  "gates": { "enabled": ["JOIN_GATE", "RECV_GATE", "STABILITY_GATE", "STIMULUS_PUBLISH_GATE", "ASR_GATE", "TURN_GATE"], "personaplexFailurePolicy": "degraded" },
+  "requireAsr": true,
+  "bots": {
+    "a": { "role": "stimulus", "personaId": "default", "conversationBackend": "asr-llm-tts", "asrProvider": "stub", "modelProvider": "stub", "ttsProvider": "stub" },
+    "b": { "role": "full", "personaId": "default", "conversationBackend": "asr-llm-tts", "asrProvider": "openai", "modelProvider": "openai", "ttsProvider": "google" }
+  }
+}

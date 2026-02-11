@@ -33,7 +33,47 @@ describe("Turn Coordinator HTTP API", () => {
     expect(data.turns).toHaveLength(0);
   });
 
-  it("POST /end-turn appends turn and GET /recent-turns returns it", async () => {
+  it("POST /request-turn then GET /turn-decision returns turnId and leaseMs when allowed", async () => {
+    const r1 = "req-lease-" + Date.now();
+    await fetch(`${baseUrl}/request-turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "alex", displayName: "Alex", transcript: "Hi", requestId: r1 }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    const decision = (await fetchJson(`/turn-decision?requestId=${r1}&agentId=alex`)) as {
+      decided?: boolean;
+      allowed?: boolean;
+      turnId?: string;
+      leaseMs?: number;
+    };
+    expect(decision.decided).toBe(true);
+    expect(decision.allowed).toBe(true);
+    expect(typeof decision.turnId).toBe("string");
+    expect(decision.turnId!.length).toBeGreaterThan(0);
+    expect(typeof decision.leaseMs).toBe("number");
+    expect(decision.leaseMs).toBeGreaterThan(0);
+    // Release the turn so subsequent tests can get a grant.
+    await fetch(`${baseUrl}/end-turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "alex", userMessage: "Hi", assistantMessage: "Ok", turnId: decision.turnId }),
+    });
+  });
+
+  it("POST /end-turn with matching turnId appends turn and GET /recent-turns returns it", async () => {
+    const r1 = "req-end-" + Date.now();
+    await fetch(`${baseUrl}/request-turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "alex", displayName: "Alex", transcript: "Hello", requestId: r1 }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    const decision = (await fetchJson(`/turn-decision?requestId=${r1}&agentId=alex`)) as { decided?: boolean; allowed?: boolean; turnId?: string };
+    expect(decision.decided).toBe(true);
+    expect(decision.allowed).toBe(true);
+    const turnId = decision.turnId;
+
     await fetch(`${baseUrl}/end-turn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -41,16 +81,54 @@ describe("Turn Coordinator HTTP API", () => {
         agentId: "alex",
         userMessage: "Hello",
         assistantMessage: "Hi there",
+        turnId,
       }),
     });
     const data = (await fetchJson("/recent-turns")) as { turns?: Array<{ user: string; assistant: string }> };
-    expect(data.turns).toHaveLength(1);
-    expect(data.turns![0].user).toBe("Hello");
-    expect(data.turns![0].assistant).toBe("Hi there");
+    expect(data.turns!.length).toBeGreaterThanOrEqual(1);
+    const last = data.turns![data.turns!.length - 1];
+    expect(last.user).toBe("Hello");
+    expect(last.assistant).toBe("Hi there");
+  });
+
+  it("POST /end-turn with wrong turnId does not append (idempotent)", async () => {
+    const r1 = "req-wrong-" + Date.now();
+    await fetch(`${baseUrl}/request-turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "alex", displayName: "Alex", transcript: "X", requestId: r1 }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    const decision = (await fetchJson(`/turn-decision?requestId=${r1}&agentId=alex`)) as { decided?: boolean; allowed?: boolean; turnId?: string };
+    const correctTurnId = decision.turnId;
+    const before = (await fetchJson("/recent-turns")) as { turns?: unknown[] };
+    const countBefore = before.turns?.length ?? 0;
+
+    await fetch(`${baseUrl}/end-turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "alex",
+        userMessage: "X",
+        assistantMessage: "Y",
+        turnId: "wrong-uuid",
+      }),
+    });
+    const after = (await fetchJson("/recent-turns")) as { turns?: unknown[] };
+    expect(after.turns?.length ?? 0).toBe(countBefore);
+
+    // Release the turn with correct turnId so the next test can run.
+    if (correctTurnId) {
+      await fetch(`${baseUrl}/end-turn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "alex", userMessage: "X", assistantMessage: "", turnId: correctTurnId }),
+      });
+    }
   });
 
   it("POST /request-turn when currentSpeaker is set returns allowed false", async () => {
-    const r1 = "req-claim";
+    const r1 = "req-claim-" + Date.now();
     await fetch(`${baseUrl}/request-turn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

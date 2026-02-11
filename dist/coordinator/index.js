@@ -2,6 +2,7 @@
 /**
  * Turn Coordinator: HTTP service for multi-agent turn-taking.
  * Run as a separate process. Agents GET /recent-turns, POST /request-turn, poll GET /turn-decision, POST /end-turn.
+ * Uses lease-based grants: winner receives turnId and leaseMs; must POST /end-turn with turnId (or lease auto-expires).
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -38,9 +39,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.server = void 0;
+const crypto = __importStar(require("crypto"));
 const http = __importStar(require("http"));
+const auction_1 = require("./auction");
 const DEFAULT_PORT = 3001;
 const DEFAULT_COLLECTION_MS = 300;
+const DEFAULT_LEASE_MS = 120_000;
 const MAX_RECENT_TURNS = 50;
 function getEnv(key, defaultValue) {
     const v = process.env[key];
@@ -56,6 +60,21 @@ function getCollectionMs() {
     const n = parseInt(s, 10);
     return Number.isNaN(n) || n < 0 ? DEFAULT_COLLECTION_MS : Math.min(n, 60_000);
 }
+/** Lease duration (ms) for granted turn; from COORDINATOR_LEASE_MS. */
+function getLeaseMs() {
+    const s = getEnv("COORDINATOR_LEASE_MS");
+    if (s === undefined)
+        return DEFAULT_LEASE_MS;
+    const n = parseInt(s, 10);
+    return Number.isNaN(n) || n < 1000 ? DEFAULT_LEASE_MS : Math.min(n, 600_000);
+}
+function generateTurnId() {
+    return crypto.randomUUID();
+}
+function getUseAuction() {
+    const s = (getEnv("COORDINATOR_USE_AUCTION") ?? "").trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes";
+}
 /** Parse COORDINATOR_AGENTS=alex:Alex,jamie:Jamie into ordered [{ id, displayName }]. */
 function parseAgentsConfig(s) {
     if (!s)
@@ -69,10 +88,25 @@ const agentsOrder = parseAgentsConfig(getEnv("COORDINATOR_AGENTS"));
 const agentOrderIds = agentsOrder.map((a) => a.agentId);
 const discoveredOrder = [];
 let currentSpeaker = null;
+/** Active lease for the current speaker; cleared on end-turn or expiry. */
+let currentLease = null;
+/** Last agent to complete a turn (for auction cooldown). */
+let lastSpeakerId = null;
 let lastRespondentIndex = -1;
 const recentTurns = [];
 const pendingRequests = new Map();
 const decisions = new Map();
+/** If current lease has expired, clear speaker and lease (log event). */
+function checkLeaseExpiry() {
+    if (currentSpeaker === null || currentLease === null)
+        return;
+    if (Date.now() < currentLease.expiresAt)
+        return;
+    const expiredTurnId = currentLease.turnId;
+    currentSpeaker = null;
+    currentLease = null;
+    console.warn(JSON.stringify({ event: "COORDINATOR_LEASE_EXPIRED", turnId: expiredTurnId }));
+}
 function runSelection(_requestId, bucket) {
     const transcriptLower = bucket.transcript.toLowerCase();
     const requestedEntries = bucket.entries;
@@ -103,6 +137,7 @@ function runSelection(_requestId, bucket) {
     return requestedEntries[lastRespondentIndex % requestedEntries.length]?.agentId ?? requestedEntries[0].agentId;
 }
 function flushRequest(requestId) {
+    checkLeaseExpiry();
     const bucket = pendingRequests.get(requestId);
     if (!bucket)
         return;
@@ -110,16 +145,36 @@ function flushRequest(requestId) {
         clearTimeout(bucket.timer);
     pendingRequests.delete(requestId);
     if (currentSpeaker !== null) {
-        decisions.set(requestId, Object.fromEntries(bucket.entries.map((e) => [e.agentId, false])));
+        const allowed = {};
+        for (const e of bucket.entries)
+            allowed[e.agentId] = false;
+        decisions.set(requestId, { allowed });
         return;
     }
-    const chosenId = runSelection(requestId, bucket);
-    currentSpeaker = chosenId;
-    const decision = {};
-    for (const e of bucket.entries) {
-        decision[e.agentId] = e.agentId === chosenId;
+    const useAuction = getUseAuction();
+    const transcriptLower = bucket.transcript.toLowerCase();
+    let chosenId;
+    let winnerSelectionReason;
+    if (useAuction && bucket.entries.some((e) => e.bid != null)) {
+        const result = (0, auction_1.runAward)(bucket.entries, transcriptLower, lastSpeakerId, agentOrderIds);
+        chosenId = result.winnerId;
+        winnerSelectionReason = result.reason;
     }
-    decisions.set(requestId, decision);
+    else {
+        chosenId = runSelection(requestId, bucket);
+        const chosenEntry = bucket.entries.find((e) => e.agentId === chosenId);
+        const nameInTranscript = (chosenEntry?.displayName || "").toLowerCase();
+        winnerSelectionReason = nameInTranscript && transcriptLower.includes(nameInTranscript) ? "name_addressing" : "round_robin";
+    }
+    const leaseMs = getLeaseMs();
+    const turnId = generateTurnId();
+    const expiresAt = Date.now() + leaseMs;
+    currentSpeaker = chosenId;
+    currentLease = { turnId, leaseMs, expiresAt };
+    const allowed = {};
+    for (const e of bucket.entries)
+        allowed[e.agentId] = e.agentId === chosenId;
+    decisions.set(requestId, { allowed, turnId, leaseMs, winnerSelectionReason });
 }
 function scheduleFlush(requestId) {
     const bucket = pendingRequests.get(requestId);
@@ -161,6 +216,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
     if (method === "GET" && url.startsWith("/turn-decision")) {
+        checkLeaseExpiry();
         const u = new URL(url, "http://localhost");
         const requestId = u.searchParams.get("requestId") ?? "";
         const agentId = u.searchParams.get("agentId") ?? "";
@@ -169,11 +225,22 @@ const server = http.createServer(async (req, res) => {
             sendJson(res, 200, { decided: false });
             return;
         }
-        const allowed = decision[agentId];
-        sendJson(res, 200, { decided: true, allowed: allowed === true });
+        const allowed = decision.allowed[agentId] === true;
+        const payload = {
+            decided: true,
+            allowed,
+        };
+        if (allowed && decision.turnId != null)
+            payload.turnId = decision.turnId;
+        if (allowed && decision.leaseMs != null)
+            payload.leaseMs = decision.leaseMs;
+        if (decision.winnerSelectionReason != null)
+            payload.winnerSelectionReason = decision.winnerSelectionReason;
+        sendJson(res, 200, payload);
         return;
     }
     if (method === "POST" && url === "/request-turn") {
+        checkLeaseExpiry();
         let body;
         try {
             body = await parseJsonBody(req);
@@ -186,6 +253,7 @@ const server = http.createServer(async (req, res) => {
         const displayName = typeof body.displayName === "string" ? body.displayName : agentId;
         const transcript = typeof body.transcript === "string" ? body.transcript : "";
         const requestId = typeof body.requestId === "string" ? body.requestId : "";
+        const bid = body.bid != null ? (0, auction_1.normalizeBid)(body.bid) : undefined;
         if (!agentId || !requestId) {
             sendJson(res, 400, { error: "Missing agentId or requestId" });
             return;
@@ -200,13 +268,18 @@ const server = http.createServer(async (req, res) => {
             pendingRequests.set(requestId, bucket);
             scheduleFlush(requestId);
         }
-        if (!bucket.entries.some((e) => e.agentId === agentId)) {
-            bucket.entries.push({ agentId, displayName });
+        const existing = bucket.entries.find((e) => e.agentId === agentId);
+        if (!existing) {
+            bucket.entries.push({ agentId, displayName, ...(bid != null ? { bid } : {}) });
+        }
+        else if (bid != null) {
+            existing.bid = bid;
         }
         sendJson(res, 200, { pending: true });
         return;
     }
     if (method === "POST" && url === "/end-turn") {
+        checkLeaseExpiry();
         let body;
         try {
             body = await parseJsonBody(req);
@@ -218,14 +291,21 @@ const server = http.createServer(async (req, res) => {
         const agentId = typeof body.agentId === "string" ? body.agentId : "";
         const userMessage = typeof body.userMessage === "string" ? body.userMessage : "";
         const assistantMessage = typeof body.assistantMessage === "string" ? body.assistantMessage : "";
+        const turnId = typeof body.turnId === "string" ? body.turnId : undefined;
         if (!agentId) {
             sendJson(res, 400, { error: "Missing agentId" });
             return;
         }
-        currentSpeaker = null;
-        recentTurns.push({ user: userMessage, assistant: assistantMessage });
-        while (recentTurns.length > MAX_RECENT_TURNS) {
-            recentTurns.shift();
+        // Only clear and append turn if turnId matches current lease (or no lease for backward compat).
+        const matchesLease = currentLease === null || (turnId != null && turnId === currentLease.turnId);
+        if (matchesLease && currentSpeaker === agentId) {
+            lastSpeakerId = agentId;
+            currentSpeaker = null;
+            currentLease = null;
+            recentTurns.push({ user: userMessage, assistant: assistantMessage });
+            while (recentTurns.length > MAX_RECENT_TURNS) {
+                recentTurns.shift();
+            }
         }
         sendJson(res, 200, { ok: true });
         return;

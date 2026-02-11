@@ -1,0 +1,6 @@
+{
+  "clips": [
+    { "id": "ack", "path": "ack.wav", "lengthMs": 250, "energy": "high", "useCase": "acknowledgment" },
+    { "id": "quick", "path": "quick.wav", "lengthMs": 400, "energy": "high", "useCase": "backchannel" }
+  ]
+}

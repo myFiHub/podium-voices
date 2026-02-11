@@ -15,24 +15,25 @@ export interface TurnDecision {
     /** Accumulated speech segment to send to ASR (when endOfTurn). */
     segment?: Buffer;
 }
+export type TtsSource = "turn" | "proactive" | "opener" | "filler";
 export interface PipelineCallbacks {
     /** Called when TTS audio is ready (stream or single buffer). */
     onTtsAudio?(buffer: Buffer, meta?: {
         utteranceId: string;
-        source: "turn" | "proactive" | "opener";
+        source: TtsSource;
     }): void;
     /** Called when a TTS utterance starts (first non-empty audio chunk). */
     onTtsStart?(meta: {
         utteranceId: string;
-        source: "turn" | "proactive" | "opener";
+        source: TtsSource;
         textLength?: number;
     }): void;
     /** Called when a TTS utterance ends (after the last audio chunk). */
     onTtsEnd?(meta: {
         utteranceId: string;
-        source: "turn" | "proactive" | "opener";
+        source: TtsSource;
     }): void;
-    /** Called when user speech is detected while the bot is speaking (barge-in). */
+    /** Called when user speech is detected while the bot is speaking (barge-in). Agent output is not committed as full reply. */
     onBargeIn?(meta: {
         reason: "user_speech";
     }): void;

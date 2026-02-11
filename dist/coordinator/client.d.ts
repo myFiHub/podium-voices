@@ -3,11 +3,25 @@
  * When COORDINATOR_URL is unset, the agent runs in single-agent mode (no coordinator calls).
  */
 import type { CoordinatorTurn } from "./types";
+/** Stub bid for auction (orchestrator can pass when coordinator is used). */
+export interface CoordinatorBid {
+    score: number;
+    intent: string;
+    confidence: number;
+    target: string | null;
+}
+/** Result of requestTurn: when allowed, turnId and leaseMs are set for end-turn. */
+export interface RequestTurnResult {
+    allowed: boolean;
+    turnId?: string;
+    leaseMs?: number;
+    winnerSelectionReason?: string;
+}
 /** Interface for turn coordination (implemented by CoordinatorClient). */
 export interface ICoordinatorClient {
     syncRecentTurns(): Promise<CoordinatorTurn[]>;
-    requestTurn(transcript: string): Promise<boolean>;
-    endTurn(userMessage: string, assistantMessage: string): Promise<void>;
+    requestTurn(transcript: string, bid?: CoordinatorBid): Promise<RequestTurnResult>;
+    endTurn(userMessage: string, assistantMessage: string, turnId?: string): Promise<void>;
 }
 export interface CoordinatorClientConfig {
     baseUrl: string;
@@ -29,10 +43,10 @@ export declare class CoordinatorClient implements ICoordinatorClient {
     constructor(config: CoordinatorClientConfig);
     /** GET /recent-turns: fetch shared conversation so agent can sync local memory. */
     syncRecentTurns(): Promise<CoordinatorTurn[]>;
-    /** POST /request-turn then poll GET /turn-decision until decided; return whether this agent is allowed. */
-    requestTurn(transcript: string): Promise<boolean>;
-    /** POST /end-turn: notify coordinator we finished our reply (clears currentSpeaker, appends turn). */
-    endTurn(userMessage: string, assistantMessage: string): Promise<void>;
+    /** POST /request-turn then poll GET /turn-decision until decided; optional bid for auction. */
+    requestTurn(transcript: string, bid?: CoordinatorBid): Promise<RequestTurnResult>;
+    /** POST /end-turn: notify coordinator we finished our reply. Pass turnId when present (lease-based). */
+    endTurn(userMessage: string, assistantMessage: string, turnId?: string): Promise<void>;
     private fetch;
 }
 //# sourceMappingURL=client.d.ts.map

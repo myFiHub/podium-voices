@@ -18,14 +18,16 @@ export interface TurnDecision {
   segment?: Buffer;
 }
 
+export type TtsSource = "turn" | "proactive" | "opener" | "filler";
+
 export interface PipelineCallbacks {
   /** Called when TTS audio is ready (stream or single buffer). */
-  onTtsAudio?(buffer: Buffer, meta?: { utteranceId: string; source: "turn" | "proactive" | "opener" }): void;
+  onTtsAudio?(buffer: Buffer, meta?: { utteranceId: string; source: TtsSource }): void;
   /** Called when a TTS utterance starts (first non-empty audio chunk). */
-  onTtsStart?(meta: { utteranceId: string; source: "turn" | "proactive" | "opener"; textLength?: number }): void;
+  onTtsStart?(meta: { utteranceId: string; source: TtsSource; textLength?: number }): void;
   /** Called when a TTS utterance ends (after the last audio chunk). */
-  onTtsEnd?(meta: { utteranceId: string; source: "turn" | "proactive" | "opener" }): void;
-  /** Called when user speech is detected while the bot is speaking (barge-in). */
+  onTtsEnd?(meta: { utteranceId: string; source: TtsSource }): void;
+  /** Called when user speech is detected while the bot is speaking (barge-in). Agent output is not committed as full reply. */
   onBargeIn?(meta: { reason: "user_speech" }): void;
   /** Called when a full agent reply text is known (for logging). */
   onAgentReply?(text: string): void;

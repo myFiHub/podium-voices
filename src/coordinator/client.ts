@@ -6,11 +6,27 @@
 import * as crypto from "crypto";
 import type { CoordinatorTurn } from "./types";
 
+/** Stub bid for auction (orchestrator can pass when coordinator is used). */
+export interface CoordinatorBid {
+  score: number;
+  intent: string;
+  confidence: number;
+  target: string | null;
+}
+
+/** Result of requestTurn: when allowed, turnId and leaseMs are set for end-turn. */
+export interface RequestTurnResult {
+  allowed: boolean;
+  turnId?: string;
+  leaseMs?: number;
+  winnerSelectionReason?: string;
+}
+
 /** Interface for turn coordination (implemented by CoordinatorClient). */
 export interface ICoordinatorClient {
   syncRecentTurns(): Promise<CoordinatorTurn[]>;
-  requestTurn(transcript: string): Promise<boolean>;
-  endTurn(userMessage: string, assistantMessage: string): Promise<void>;
+  requestTurn(transcript: string, bid?: CoordinatorBid): Promise<RequestTurnResult>;
+  endTurn(userMessage: string, assistantMessage: string, turnId?: string): Promise<void>;
 }
 
 export interface CoordinatorClientConfig {
@@ -63,28 +79,31 @@ export class CoordinatorClient implements ICoordinatorClient {
     }
   }
 
-  /** POST /request-turn then poll GET /turn-decision until decided; return whether this agent is allowed. */
-  async requestTurn(transcript: string): Promise<boolean> {
+  /** POST /request-turn then poll GET /turn-decision until decided; optional bid for auction. */
+  async requestTurn(transcript: string, bid?: CoordinatorBid): Promise<RequestTurnResult> {
     const requestId = computeRequestId(transcript);
+    const body: Record<string, unknown> = {
+      agentId: this.agentId,
+      displayName: this.displayName,
+      transcript,
+      requestId,
+    };
+    if (bid != null) body.bid = bid;
+
     let postRes: Response;
     try {
       postRes = await this.fetch("/request-turn", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        transcript,
-        requestId,
-      }),
-    });
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
     } catch {
-      return false;
+      return { allowed: false };
     }
-    if (!postRes.ok) return false;
+    if (!postRes.ok) return { allowed: false };
     const postData = (await postRes.json()) as { pending?: boolean; allowed?: boolean };
-    if (postData.pending === false && postData.allowed === false) return false;
-    if (postData.allowed === true) return true;
+    if (postData.pending === false && postData.allowed === false) return { allowed: false };
+    if (postData.allowed === true) return { allowed: true };
 
     const deadline = Date.now() + this.decisionTimeoutMs;
     while (Date.now() < deadline) {
@@ -93,22 +112,37 @@ export class CoordinatorClient implements ICoordinatorClient {
         `/turn-decision?requestId=${encodeURIComponent(requestId)}&agentId=${encodeURIComponent(this.agentId)}`
       );
       if (!getRes.ok) continue;
-      const getData = (await getRes.json()) as { decided?: boolean; allowed?: boolean };
-      if (getData.decided) return getData.allowed === true;
+      const getData = (await getRes.json()) as {
+        decided?: boolean;
+        allowed?: boolean;
+        turnId?: string;
+        leaseMs?: number;
+        winnerSelectionReason?: string;
+      };
+      if (getData.decided) {
+        return {
+          allowed: getData.allowed === true,
+          turnId: getData.turnId,
+          leaseMs: getData.leaseMs,
+          winnerSelectionReason: getData.winnerSelectionReason,
+        };
+      }
     }
-    return false;
+    return { allowed: false };
   }
 
-  /** POST /end-turn: notify coordinator we finished our reply (clears currentSpeaker, appends turn). */
-  async endTurn(userMessage: string, assistantMessage: string): Promise<void> {
+  /** POST /end-turn: notify coordinator we finished our reply. Pass turnId when present (lease-based). */
+  async endTurn(userMessage: string, assistantMessage: string, turnId?: string): Promise<void> {
+    const body: Record<string, string> = {
+      agentId: this.agentId,
+      userMessage,
+      assistantMessage,
+    };
+    if (turnId != null) body.turnId = turnId;
     await this.fetch("/end-turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agentId: this.agentId,
-        userMessage,
-        assistantMessage,
-      }),
+      body: JSON.stringify(body),
     });
   }
 

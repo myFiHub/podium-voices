@@ -2,6 +2,8 @@
  * High-signal metrics and watchdogs for production.
  * Counters and latencies are logged; watchdogs can trigger restarts.
  */
+/** Reason the coordinator selected the winner (for multi-agent). */
+export type WinnerSelectionReason = "name_addressing" | "round_robin" | "auction";
 /** Last turn timing (ms). */
 export interface TurnMetrics {
     asrLatencyMs?: number;
@@ -9,6 +11,16 @@ export interface TurnMetrics {
     ttsLatencyMs?: number;
     /** End of user speech to first bot audio (primary KPI). */
     endOfUserSpeechToBotAudioMs?: number;
+    /** Bid phase duration (ms) when auction is used. */
+    bidPhaseMs?: number;
+    /** Why this agent won the turn (multi-agent). */
+    winnerSelectionReason?: WinnerSelectionReason;
+    /** Time from barge-in signal to last TTS chunk sent (ms). */
+    bargeInStopLatencyMs?: number;
+    /** Turn ID from coordinator for correlation. */
+    turnId?: string;
+    /** Request ID for correlation. */
+    requestId?: string;
 }
 /** Audio bridge / bot stats (from browser or Node). */
 export interface AudioMetrics {

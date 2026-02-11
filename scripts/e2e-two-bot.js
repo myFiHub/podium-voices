@@ -369,6 +369,8 @@ function main() {
       replyAt: null,
       personaplexFailedAt: null,
     },
+    /** Last TURN_METRICS seen (for TTFA, bid phase, etc.); from bot log lines. */
+    metrics: null,
     debug: {
       // Captured tail of child process logs (last N lines per stream label).
       // This is crucial for diagnosing early exits (e.g., config errors, join failures).
@@ -482,6 +484,8 @@ function main() {
     transcriptText: "",
     /** When policy is degraded, bot that had PERSONAPLEX_FAILED; AGENT_REPLY from this bot counts as gate recovered. */
     personaplexFailedBotId: null,
+    /** Last TURN_METRICS payload (from any bot) for report.metrics. */
+    lastTurnMetrics: null,
   };
 
   const STABILITY_BAD_EVENTS = new Set([
@@ -580,6 +584,7 @@ function main() {
     report.events.publishPassAt = state.publishPassAt || null;
     report.events.asrAt = state.asrAt || null;
     report.events.replyAt = state.replyAt || null;
+    report.metrics = state.lastTurnMetrics;
 
     // Include captured tails in the report artifact.
     try {
@@ -679,6 +684,19 @@ function main() {
     }
 
     // ASR/TURN gates: bot B should transcribe and reply (if stimulus is speech).
+    if (ev === "TURN_METRICS" && botId) {
+      state.lastTurnMetrics = {
+        endOfUserSpeechToBotAudioMs: obj.end_of_user_speech_to_bot_audio_ms,
+        bidPhaseMs: obj.bid_phase_ms,
+        winnerSelectionReason: obj.winner_selection_reason,
+        bargeInStopLatencyMs: obj.barge_in_stop_latency_ms,
+        turnId: obj.turn_id,
+        requestId: obj.request_id,
+        asrLatencyMs: obj.asr_latency_ms,
+        llmLatencyMs: obj.llm_latency_ms,
+        ttsLatencyMs: obj.tts_latency_ms,
+      };
+    }
     if (ev === "USER_TRANSCRIPT" && state.asrAt === 0) {
       const len = typeof obj.textLength === "number" ? obj.textLength : 0;
       if (len > 0) {

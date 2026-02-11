@@ -4,12 +4,14 @@
  */
 
 export interface VoiceOptions {
-  /** Voice name or id (provider-specific). */
+  /** Voice name or id (provider-specific). Used for persona voice profiles. */
   voiceName?: string;
   /** Language code (e.g. en-US). */
   languageCode?: string;
   /** Sample rate in Hz (e.g. 48000 for WebRTC). */
   sampleRateHz?: number;
+  /** Optional speaking rate (provider-specific). */
+  speakingRate?: number;
 }
 
 /**
@@ -25,6 +27,16 @@ export interface ITTS {
     text: string,
     options?: VoiceOptions
   ): Promise<Buffer> | Promise<AsyncIterable<Buffer>> | AsyncIterable<Buffer>;
+
+  /**
+   * Optional: stream text to speech as text becomes available (e.g. from LLM).
+   * Yields audio chunks as soon as possible for lower TTFA.
+   * Adapters that do not support this omit it; orchestrator falls back to synthesize().
+   */
+  synthesizeStream?(
+    input: AsyncIterable<string> | Iterable<string>,
+    options?: VoiceOptions
+  ): AsyncIterable<Buffer>;
 }
 
 /**

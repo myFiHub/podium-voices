@@ -20,6 +20,11 @@ function recordTurnMetrics(metrics) {
         llm_latency_ms: metrics.llmLatencyMs,
         tts_latency_ms: metrics.ttsLatencyMs,
         end_of_user_speech_to_bot_audio_ms: metrics.endOfUserSpeechToBotAudioMs,
+        bid_phase_ms: metrics.bidPhaseMs,
+        winner_selection_reason: metrics.winnerSelectionReason,
+        barge_in_stop_latency_ms: metrics.bargeInStopLatencyMs,
+        turn_id: metrics.turnId,
+        request_id: metrics.requestId,
     }, "Turn latency");
 }
 function recordAudioMetrics(metrics) {
