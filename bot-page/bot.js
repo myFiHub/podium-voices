@@ -1175,6 +1175,7 @@
             if (wantCommit) {
               var prev = rxTrackSelection.selectedTrackId || "";
               rxTrackSelection.selectedTrackId = topId;
+              rxTrackSelection.lastRebindAtMs = now; // so truth_probe grace uses this for initial commit too
               sendToNode({
                 type: "track_selected",
                 ts: now,
@@ -1251,13 +1252,17 @@
           var receiverTracks = getAllReceiverTracks();
 
           // Push truth probe to Node every ~2s (contracts rely on deltas).
+          // Include ms_since_last_track_bind so Node can apply receive-contract grace without relying on message order.
           if (now - lastTruthProbeAt >= 1900) {
             lastTruthProbeAt = now;
+            var lastBindMs = rxTrackSelection.lastRebindAtMs || 0;
+            var msSinceLastTrackBind = lastBindMs > 0 ? (now - lastBindMs) : 999999;
             sendToNode({
               type: "truth_probe",
               sessionId: sessionId,
               conferenceId: conferenceId,
               ts: now,
+              ms_since_last_track_bind: msSinceLastTrackBind,
               audio_inbound_bytes_delta: stats.audio_inbound_bytes_delta || 0,
               audio_inbound_packets_delta: stats.audio_inbound_packets_delta || 0,
               audio_inbound_track_identifier: stats.audio_inbound_track_identifier || "",
@@ -1280,6 +1285,26 @@
     }, 2000);
   }
 
+  /** Clear track selection and remote bindings so a new room or re-join starts from a clean state (avoids wrong-track from stale bindings across rooms or phased negotiation). */
+  function resetTrackSelectionAndBindingsForNewRoom() {
+    rxTrackSelection.selectedTrackId = "";
+    rxTrackSelection.candidateTrackId = "";
+    rxTrackSelection.candidateWins = 0;
+    rxTrackSelection.lastRebindAtMs = 0;
+    rxTrackSelection.lastCandidatesSentAtMs = 0;
+    remoteParticipantsAdded = {};
+    for (var rk in remoteBindings) {
+      if (!Object.prototype.hasOwnProperty.call(remoteBindings, rk)) continue;
+      var rb = remoteBindings[rk];
+      if (rb) {
+        try { if (rb.source && typeof rb.source.disconnect === "function") rb.source.disconnect(); } catch (e) { /* ignore */ }
+        try { if (rb.analyser && typeof rb.analyser.disconnect === "function") rb.analyser.disconnect(); } catch (e) { /* ignore */ }
+        try { disposeChromeRemoteAudioConsumer(rb.chromeConsumeAudio); } catch (e) { /* ignore */ }
+      }
+    }
+    remoteBindings = {};
+  }
+
   window.bot = {
     join: function (config) {
       if (!config || typeof config !== "object") return Promise.reject(new Error("Bot join: config required"));
@@ -1287,6 +1312,7 @@
       if (!host || typeof host !== "string") return Promise.reject(new Error("Bot join: config.domain required (hostname only)"));
       const roomName = config.roomName != null ? String(config.roomName).trim() : "";
       if (!roomName) return Promise.reject(new Error("Bot join: config.roomName required"));
+      resetTrackSelectionAndBindingsForNewRoom();
       try {
         sessionId = config.sessionId != null ? String(config.sessionId) : sessionId;
         conferenceId = config.conferenceId != null ? String(config.conferenceId) : roomName;

@@ -12,6 +12,7 @@ const tts_1 = require("../adapters/tts");
 const metrics_1 = require("../metrics");
 const safety_1 = require("./safety");
 const logging_1 = require("../logging");
+const sentence_splitter_1 = require("./sentence-splitter");
 const DEFAULT_ASR_TIMEOUT_MS = 20_000;
 const DEFAULT_LLM_TIMEOUT_MS = 25_000;
 function withTimeout(p, timeoutMs, label) {
@@ -371,22 +372,125 @@ class Orchestrator {
         });
         const llmStart = Date.now();
         let fullText = "";
+        let llmLatencyMs = 0;
         try {
             const llmResponse = await withTimeout(this.llm.chat(messages, { stream: true, maxTokens: 150 }), this.timeouts.llmMs, "LLM");
             fullText = llmResponse.text;
             const stream = llmResponse.stream;
+            // Allow barge-in during LLM consumption and TTS; first audio can start as soon as first sentence is ready.
+            this.processing = false;
+            this.speaking = true;
+            this.cancelTts = false;
+            const ttsStart = Date.now();
+            let firstTtsChunkAt;
+            let ttsStarted = false;
+            const utteranceId = `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             if (stream) {
-                const parts = [];
-                for await (const token of stream)
-                    parts.push(token);
-                fullText = parts.join("");
+                let buffer = "";
+                try {
+                    for await (const token of stream) {
+                        if (this.cancelTts)
+                            break;
+                        buffer += token;
+                        const { sentences, remainder } = (0, sentence_splitter_1.flushSentences)(buffer, sentence_splitter_1.DEFAULT_MAX_CHARS_PER_CHUNK);
+                        buffer = remainder;
+                        for (const s of sentences) {
+                            if (this.cancelTts)
+                                break;
+                            fullText += s;
+                            const sentenceSafe = this.safety.sanitizeAssistantReply(s);
+                            if (!sentenceSafe.allowed || !sentenceSafe.text.trim())
+                                continue;
+                            const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), { sampleRateHz: 48000 });
+                            for await (const buf of (0, tts_1.ttsToStream)(ttsResult)) {
+                                if (this.cancelTts)
+                                    break;
+                                if (buf.length > 0) {
+                                    if (firstTtsChunkAt === undefined)
+                                        firstTtsChunkAt = Date.now();
+                                    if (!ttsStarted) {
+                                        ttsStarted = true;
+                                        this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: sentenceSafe.text.trim().length });
+                                    }
+                                    this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
+                                }
+                            }
+                        }
+                    }
+                    if (this.cancelTts) {
+                        llmLatencyMs = Date.now() - llmStart;
+                        this.speaking = false;
+                        (0, metrics_1.recordTurnMetrics)({ asrLatencyMs, llmLatencyMs, endOfUserSpeechToBotAudioMs: firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined });
+                        await this.maybeRunPendingTurn();
+                        return;
+                    }
+                    buffer = buffer.trim();
+                    if (buffer.length > 0) {
+                        const sentenceSafe = this.safety.sanitizeAssistantReply(buffer);
+                        if (sentenceSafe.allowed && sentenceSafe.text.trim()) {
+                            fullText += buffer;
+                            const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), { sampleRateHz: 48000 });
+                            for await (const buf of (0, tts_1.ttsToStream)(ttsResult)) {
+                                if (this.cancelTts)
+                                    break;
+                                if (buf.length > 0) {
+                                    if (firstTtsChunkAt === undefined)
+                                        firstTtsChunkAt = Date.now();
+                                    if (!ttsStarted) {
+                                        ttsStarted = true;
+                                        this.callbacks.onTtsStart?.({ utteranceId, source: "turn", textLength: sentenceSafe.text.trim().length });
+                                    }
+                                    this.callbacks.onTtsAudio?.(buf, { utteranceId, source: "turn" });
+                                }
+                            }
+                        }
+                        else {
+                            fullText += buffer;
+                        }
+                    }
+                }
+                catch (err) {
+                    logging_1.logger.warn({ event: "TTS_FAILED", err: err.message }, "TTS failed");
+                }
+                finally {
+                    if (ttsStarted)
+                        this.callbacks.onTtsEnd?.({ utteranceId, source: "turn" });
+                    this.speaking = false;
+                }
+                llmLatencyMs = Date.now() - llmStart;
+                const ttsLatencyMs = Date.now() - ttsStart;
+                const assistantSafe = this.safety.sanitizeAssistantReply(fullText);
+                if (!assistantSafe.allowed || !assistantSafe.text.trim()) {
+                    (0, metrics_1.recordTurnMetrics)({
+                        asrLatencyMs,
+                        llmLatencyMs,
+                        ttsLatencyMs,
+                        endOfUserSpeechToBotAudioMs: firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined,
+                    });
+                    await this.maybeRunPendingTurn();
+                    return;
+                }
+                this.memory.append("assistant", assistantSafe.text);
+                this.callbacks.onAgentReply?.(assistantSafe.text);
+                if (this.coordinatorClient) {
+                    await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
+                }
+                const endOfUserSpeechToBotAudioMs = firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined;
+                (0, metrics_1.recordTurnMetrics)({
+                    asrLatencyMs,
+                    llmLatencyMs,
+                    ttsLatencyMs,
+                    endOfUserSpeechToBotAudioMs,
+                });
+                await this.maybeRunPendingTurn();
+                return;
             }
         }
         catch (err) {
             logging_1.logger.warn({ event: "LLM_FAILED", err: err.message }, "LLM failed");
             fullText = "Sorry—I'm having trouble responding right now. Please try again in a moment.";
         }
-        const llmLatencyMs = Date.now() - llmStart;
+        llmLatencyMs = Date.now() - llmStart;
         const assistantSafe = this.safety.sanitizeAssistantReply(fullText);
         if (!assistantSafe.allowed || !assistantSafe.text.trim())
             return;
@@ -395,7 +499,6 @@ class Orchestrator {
         if (this.coordinatorClient) {
             await this.coordinatorClient.endTurn(userSafe.text, assistantSafe.text);
         }
-        // Allow receiving audio while speaking so barge-in can be detected.
         this.processing = false;
         this.speaking = true;
         this.cancelTts = false;

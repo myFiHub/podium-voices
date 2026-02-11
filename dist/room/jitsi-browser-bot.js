@@ -152,6 +152,9 @@ class JitsiBrowserBot {
     artifactRetentionN = envInt("ARTIFACT_RETENTION_N", 10);
     preMixerPassThreshold = envInt("PRE_MIXER_PASS_THRESHOLD", 200);
     recvGateConsecutiveN = envInt("RECV_GATE_CONSECUTIVE_N", 3);
+    /** Grace period (ms) after track_selected/track_rebind_receiver during which we do not fail the receive contract for post_mixer 0 (avoids false WRONG_TRACK from phased negotiation / decode delay). */
+    recvGraceAfterBindMs = envInt("RECV_GRACE_AFTER_BIND_MS", 6000);
+    lastTrackSelectionOrRebindAt = 0;
     /**
      * Test mode: inject a deterministic PCM stimulus into the outbound audio path.
      *
@@ -575,29 +578,50 @@ class JitsiBrowserBot {
         // Pass when we have inbound RTP and the mixer output has audio (post_mixer > 0). We do not require
         // pre_mixer above threshold for a pass: pre_mixer sampling can be intermittently 0 due to Chromium
         // decode timing or multi-participant track selection, while post_mixer still carries remote audio.
+        // Within recvGraceAfterBindMs of a track_selected or track_rebind_receiver we do not fail the contract
+        // for post_mixer 0, to avoid false WRONG_TRACK when the new binding has not yet produced decoded audio.
         const threshold = this.preMixerPassThreshold;
+        const nowForContract = Date.now();
+        const withinGraceAfterBind = this.recvGraceAfterBindMs > 0 && this.lastTrackSelectionOrRebindAt > 0 && nowForContract - this.lastTrackSelectionOrRebindAt < this.recvGraceAfterBindMs;
         if (inboundBytesDelta > 0) {
             this.consecutiveNoInboundProbes = 0;
             const premixOk = preMix > threshold;
             const postmixOk = postMix > 0;
             const passContract = postmixOk; // inbound + mixer output is sufficient; premix can be flaky
             if (!postmixOk) {
-                this.receiveContractPassStreak = 0;
-                this.lastLoggedReceiveContractPass = false;
-                const reason = premixOk ? "MIXER_WIRING" : "WRONG_TRACK";
-                logging_1.logger.warn({
-                    event: "health_contract_receive",
-                    pass: false,
-                    reason,
-                    sessionId: this.sessionId,
-                    conferenceId: this.conferenceId,
-                    audio_inbound_bytes_delta: inboundBytesDelta,
-                    pre_mixer_max_abs: preMix,
-                    post_mixer_max_abs: postMix,
-                    audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
-                }, premixOk
-                    ? "Receive contract failed: pre-mixer has audio, but post-mixer is silent (mixer wiring / pull issue)"
-                    : "Receive contract failed: inbound RTP present, but pre-mixer is silent (likely wrong track binding / phased negotiation)");
+                if (withinGraceAfterBind) {
+                    // Do not reset streak or log failure; next probe may pass once decode/mixer catches up.
+                    logging_1.logger.debug({
+                        event: "health_contract_receive",
+                        pass: false,
+                        reason: "GRACE_AFTER_BIND",
+                        sessionId: this.sessionId,
+                        conferenceId: this.conferenceId,
+                        audio_inbound_bytes_delta: inboundBytesDelta,
+                        pre_mixer_max_abs: preMix,
+                        post_mixer_max_abs: postMix,
+                        ms_since_bind: nowForContract - this.lastTrackSelectionOrRebindAt,
+                        grace_ms: this.recvGraceAfterBindMs,
+                    }, "Receive contract: post_mixer 0 within grace after track bind (skipping failure)");
+                }
+                else {
+                    this.receiveContractPassStreak = 0;
+                    this.lastLoggedReceiveContractPass = false;
+                    const reason = premixOk ? "MIXER_WIRING" : "WRONG_TRACK";
+                    logging_1.logger.warn({
+                        event: "health_contract_receive",
+                        pass: false,
+                        reason,
+                        sessionId: this.sessionId,
+                        conferenceId: this.conferenceId,
+                        audio_inbound_bytes_delta: inboundBytesDelta,
+                        pre_mixer_max_abs: preMix,
+                        post_mixer_max_abs: postMix,
+                        audio_inbound_track_identifier: msg.audio_inbound_track_identifier,
+                    }, premixOk
+                        ? "Receive contract failed: pre-mixer has audio, but post-mixer is silent (mixer wiring / pull issue)"
+                        : "Receive contract failed: inbound RTP present, but pre-mixer is silent (likely wrong track binding / phased negotiation)");
+                }
             }
             else if (passContract) {
                 this.receiveContractPassStreak++;
@@ -1043,6 +1067,7 @@ class JitsiBrowserBot {
                         }, "Bot using PC receiver track for mixer (not Jitsi wrapper)");
                     }
                     else if (msg.type === "track_rebind_receiver") {
+                        this.lastTrackSelectionOrRebindAt = Date.now();
                         logging_1.logger.info({
                             event: "BOT_TRACK_REBIND_RECEIVER",
                             sessionId: this.sessionId,
@@ -1066,6 +1091,7 @@ class JitsiBrowserBot {
                         }, "Track selection candidates (browser)");
                     }
                     else if (msg.type === "track_selected") {
+                        this.lastTrackSelectionOrRebindAt = Date.now();
                         logging_1.logger.info({
                             event: "TRACK_SELECTED",
                             sessionId: this.sessionId,

@@ -33,6 +33,9 @@ export declare class JitsiBrowserBot implements IJitsiRoom {
     private readonly artifactRetentionN;
     private readonly preMixerPassThreshold;
     private readonly recvGateConsecutiveN;
+    /** Grace period (ms) after track_selected/track_rebind_receiver during which we do not fail the receive contract for post_mixer 0 (avoids false WRONG_TRACK from phased negotiation / decode delay). */
+    private readonly recvGraceAfterBindMs;
+    private lastTrackSelectionOrRebindAt;
     /**
      * Test mode: inject a deterministic PCM stimulus into the outbound audio path.
      *

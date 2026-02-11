@@ -7,13 +7,21 @@ import * as http from "http";
 import type { CoordinatorTurn, PendingBucket, PendingEntry } from "./types";
 
 const DEFAULT_PORT = 3001;
-const COLLECTION_MS = 300;
+const DEFAULT_COLLECTION_MS = 300;
 const MAX_RECENT_TURNS = 50;
 
 function getEnv(key: string, defaultValue?: string): string | undefined {
   const v = process.env[key];
   if (v === undefined || v === "") return defaultValue;
   return v.trim();
+}
+
+/** Collection window (ms) before turn decision; from COORDINATOR_COLLECTION_MS (default 300). */
+function getCollectionMs(): number {
+  const s = getEnv("COORDINATOR_COLLECTION_MS");
+  if (s === undefined) return DEFAULT_COLLECTION_MS;
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) || n < 0 ? DEFAULT_COLLECTION_MS : Math.min(n, 60_000);
 }
 
 /** Parse COORDINATOR_AGENTS=alex:Alex,jamie:Jamie into ordered [{ id, displayName }]. */
@@ -91,9 +99,10 @@ function flushRequest(requestId: string): void {
 function scheduleFlush(requestId: string): void {
   const bucket = pendingRequests.get(requestId);
   if (!bucket || bucket.timer) return;
+  const collectionMs = getCollectionMs();
   const timer = setTimeout(() => {
     flushRequest(requestId);
-  }, COLLECTION_MS);
+  }, collectionMs);
   bucket.timer = timer;
   (timer as NodeJS.Timeout).unref?.();
 }
