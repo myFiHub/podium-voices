@@ -69,7 +69,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 - **Starting the dialogue**: When the bot joins the room, it either speaks a fixed **greeting** (`GREETING_TEXT`) or generates a storyteller-style **opener** (LLM) if `OPENER_ENABLED=true` and `GREETING_TEXT` is empty. Use `TOPIC_SEED` to steer the opener.
 - **Responding to you**: The bot listens to **remote audio** (your mic) and replies after you finish speaking (VAD detects silence). For the bot to hear you, **unmute your microphone** in the meeting. If the bot never responds, check that your client is not muting outgoing audio and that the bot process logs show incoming audio (e.g. `USER_TRANSCRIPT` after you talk).
-- **Natural / influencer-style voice**: To reduce stilted or corporate-sounding replies, set **`PERSONA_ID=influencer`** in `.env.local`. The base prompt also includes speaking-style guidance (react to what was said, vary rhythm, natural transitions) so even `default` should sound more like a real host. For a stronger podcast/influencer vibe (e.g. mix of Obama/Rogan or Harris/Alex Cooper–style warmth and directness), use **`influencer`**.
+- **Natural / influencer-style voice**: To reduce stilted or corporate-sounding replies, set **`PERSONA_ID=influencer`** in `.env.local`. The base prompt also includes speaking-style guidance (react to what was said, vary rhythm, natural transitions) so even `default` should sound more like a real host. For a stronger podcast/influencer vibe, use **`influencer`**. For **cadence-tuned personas** (orator, podcast host, bold host, storyteller, pundit), set **`PERSONA_ID=orator`** (or `podcast_host`, `bold_host`, `storyteller`, `pundit`); each uses `personas/*.json` for TTS rate/pitch and filler dir.
 
 ### E2E and podcast-style conversation
 
@@ -91,7 +91,7 @@ The run passes when join, stability, stimulus publish, and at least one transcri
 - **Pipeline**: `VAD_SILENCE_MS`, `MAX_TURNS_IN_MEMORY`; `GREETING_TEXT`, `GREETING_DELAY_MS`; `OPENER_ENABLED`, `OPENER_DELAY_MS`, `OPENER_MAX_TOKENS`, `TOPIC_SEED`.
 - **Podium**: `NEXT_PUBLIC_*`, `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`; **USE_JITSI_BOT** (`true` = browser bot for real Jitsi audio); **BOT_PAGE_URL** (optional; default = Node serves `bot-page/` on the bridge port, starting at 8766).
 - **Agent / persona / feedback**:
-  - **`PERSONA_ID`**: `default` | `hype` | `calm` | **`influencer`** (system prompt + feedback thresholds + optional feedback wording). Use **`influencer`** for a more natural, podcast/influencer-like voice (warmer, more direct, better flow).
+  - **`PERSONA_ID`**: `default` | `hype` | `calm` | **`influencer`** | **`orator`** | **`podcast_host`** | **`bold_host`** | **`storyteller`** | **`pundit`** (system prompt + feedback + optional cadence). **Cadence personas** use specs in `personas/*.json` for TTS rate/pitch, **per-persona Google TTS voice** (`voice.googleVoiceName`), and filler dir `assets/fillers/<PERSONA_ID>/`.
   - **`FEEDBACK_REACT_TO_ADDRESS`**: filter which reactions are counted:
     - unset/empty = count all room reactions (room mood)
     - `self` = count only reactions targeting the bot’s wallet address

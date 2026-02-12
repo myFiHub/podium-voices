@@ -25,11 +25,17 @@ export class GoogleCloudTTS implements ITTS {
     const voiceName = options?.voiceName ?? this.config.voiceName ?? "en-US-Neural2-D";
     const languageCode = options?.languageCode ?? this.config.languageCode ?? "en-US";
     const sampleRate = options?.sampleRateHz ?? 48000;
+    const audioConfig: Record<string, unknown> = {
+      audioEncoding: "LINEAR16",
+      sampleRateHertz: sampleRate,
+    };
+    if (options?.speakingRate != null) audioConfig.speakingRate = options.speakingRate;
+    if (options?.pitch != null) audioConfig.pitch = options.pitch;
     const url = `${SYNTHESIZE_URL}?key=${encodeURIComponent(this.config.apiKey)}`;
     const body = {
       input: { text },
       voice: { name: voiceName, languageCode },
-      audioConfig: { audioEncoding: "LINEAR16", sampleRateHertz: sampleRate },
+      audioConfig,
     };
     const response = await fetch(url, {
       method: "POST",
@@ -63,10 +69,16 @@ export class GoogleCloudTTSADC implements ITTS {
     const voiceName = options?.voiceName ?? this.config.voiceName ?? "en-US-Neural2-D";
     const languageCode = options?.languageCode ?? this.config.languageCode ?? "en-US";
     const sampleRate = options?.sampleRateHz ?? 48000;
+    const audioConfig: Record<string, unknown> = {
+      audioEncoding: "LINEAR16",
+      sampleRateHertz: sampleRate,
+    };
+    if (options?.speakingRate != null) audioConfig.speakingRate = options.speakingRate;
+    if (options?.pitch != null) audioConfig.pitch = options.pitch;
     const [response] = await this.client.synthesizeSpeech({
       input: { text },
       voice: { name: voiceName, languageCode },
-      audioConfig: { audioEncoding: "LINEAR16", sampleRateHertz: sampleRate },
+      audioConfig,
     });
     const content = response.audioContent;
     if (!content || !(content instanceof Uint8Array)) return Buffer.alloc(0);

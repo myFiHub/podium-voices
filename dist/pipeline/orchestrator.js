@@ -5,6 +5,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Orchestrator = void 0;
+const cadence_personas_1 = require("../prompts/cadence-personas");
 const vad_1 = require("./vad");
 const audio_utils_1 = require("./audio-utils");
 const prompt_manager_1 = require("../prompts/prompt-manager");
@@ -53,6 +54,7 @@ class Orchestrator {
     personaplexFallbackToLlm;
     fillerConfig;
     personaId;
+    cadenceProfileId;
     /** Set when main TTS starts so filler playback aborts. */
     fillerAbort = false;
     constructor(asr, llm, tts, memory, config, callbacks = {}) {
@@ -81,6 +83,24 @@ class Orchestrator {
         this.personaplexFallbackToLlm = Boolean(config.personaplexFallbackToLlm);
         this.fillerConfig = config.fillerConfig;
         this.personaId = config.personaId ?? "default";
+        this.cadenceProfileId = config.cadenceProfileId;
+    }
+    /** Voice options for TTS: sample rate, rate/pitch, and optional voice name from cadence profile when set. */
+    getVoiceOptionsForTts() {
+        const base = { sampleRateHz: 48000 };
+        if (!this.cadenceProfileId)
+            return base;
+        const spec = (0, cadence_personas_1.getCadencePersona)(this.cadenceProfileId);
+        if (!spec)
+            return base;
+        const { ratePercent, pitchPercent } = spec.ssmlDefaults ?? {};
+        const googleVoiceName = spec.voice?.googleVoiceName?.trim();
+        return {
+            ...base,
+            speakingRate: ratePercent != null ? ratePercent / 100 : undefined,
+            pitch: pitchPercent != null ? (pitchPercent / 100) * 4 : undefined,
+            ...(googleVoiceName ? { voiceName: googleVoiceName } : {}),
+        };
     }
     /** Capture barge-in stop latency (ms) and clear; call when recording turn metrics. */
     captureBargeInLatency() {
@@ -476,7 +496,7 @@ class Orchestrator {
                                 const sentenceSafe = this.safety.sanitizeAssistantReply(s);
                                 if (!sentenceSafe.allowed || !sentenceSafe.text.trim())
                                     continue;
-                                const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), { sampleRateHz: 48000 });
+                                const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), this.getVoiceOptionsForTts());
                                 for await (const buf of (0, tts_1.ttsToStream)(ttsResult)) {
                                     if (this.cancelTts)
                                         break;
@@ -513,7 +533,7 @@ class Orchestrator {
                             const sentenceSafe = this.safety.sanitizeAssistantReply(buffer);
                             if (sentenceSafe.allowed && sentenceSafe.text.trim()) {
                                 fullText += buffer;
-                                const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), { sampleRateHz: 48000 });
+                                const ttsResult = this.tts.synthesize(sentenceSafe.text.trim(), this.getVoiceOptionsForTts());
                                 for await (const buf of (0, tts_1.ttsToStream)(ttsResult)) {
                                     if (this.cancelTts)
                                         break;
@@ -594,7 +614,7 @@ class Orchestrator {
             let ttsStarted = false;
             const utteranceId = `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             try {
-                const ttsResult = this.tts.synthesize(assistantSafe.text.trim(), { sampleRateHz: 48000 });
+                const ttsResult = this.tts.synthesize(assistantSafe.text.trim(), this.getVoiceOptionsForTts());
                 for await (const buf of (0, tts_1.ttsToStream)(ttsResult)) {
                     if (this.cancelTts)
                         break;
@@ -696,7 +716,7 @@ class Orchestrator {
     }
     async speakTextViaTts(text, source) {
         const utteranceId = `${source}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const ttsResult = this.tts.synthesize(text, { sampleRateHz: 48000 });
+        const ttsResult = this.tts.synthesize(text, this.getVoiceOptionsForTts());
         let ttsStarted = false;
         // Allow receiving audio while speaking so barge-in can be detected.
         this.speaking = true;

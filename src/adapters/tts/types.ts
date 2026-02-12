@@ -10,8 +10,10 @@ export interface VoiceOptions {
   languageCode?: string;
   /** Sample rate in Hz (e.g. 48000 for WebRTC). */
   sampleRateHz?: number;
-  /** Optional speaking rate (provider-specific). */
+  /** Optional speaking rate (e.g. 1.0 = normal; 0.92 = slightly slower for orator). */
   speakingRate?: number;
+  /** Optional pitch in semitones (e.g. -0.08 for slightly lower). Used by cadence profiles. */
+  pitch?: number;
 }
 
 /**

@@ -1,0 +1,92 @@
+{
+  "id": "orator",
+  "name": "The Orator",
+  "inspiration": "Measured, presidential, inspirational orator—composed and weighty without copying any real individual.",
+  "styleContract": {
+    "wpm": {
+      "baseline": { "min": 135, "max": 160 },
+      "stakes": { "min": 120, "max": 140 },
+      "connective": { "min": 160, "max": 175 }
+    },
+    "pauseBudget": { "targetFraction": { "min": 0.12, "max": 0.22 } },
+    "pauseTiers": {
+      "commaMs": { "min": 120, "max": 180 },
+      "periodMs": { "min": 280, "max": 450 },
+      "paragraphMs": { "min": 650, "max": 900 },
+      "emphasisLeadInMs": { "min": 350, "max": 600 }
+    },
+    "phraseAndEmphasis": {
+      "wordsPerClause": { "min": 7, "max": 14 },
+      "emphasisPerWords": 14
+    },
+    "intonation": {
+      "description": "Narrow pitch range; controlled rise on rhetorical questions; gentle fall at line ends.",
+      "pitchPercent": -2
+    }
+  },
+  "writingGuidelines": {
+    "summary": "Short clauses stitched by commas and semicolons. Parallelism and triads used sparingly. Setup, pause, then punchline. Inclusive framing (we, our, together). No meme slang or dense subordinate clauses.",
+    "sentenceArchitecture": [
+      "Prefer short clauses stitched by commas and semicolons, not long winding sentences.",
+      "Use parallelism (repeat structure, not exact wording).",
+      "Use triads (A, B, and C) sparingly but deliberately.",
+      "Use setup → pause → punchline structure.",
+      "Use inclusive framing (we, our, together) for a unifying vibe."
+    ],
+    "prefer": [
+      "Clean clause boundaries every 7–14 words.",
+      "One emphasized word per ~14 words.",
+      "Rhetorical questions with a slight rise, then resolution with a fall."
+    ],
+    "avoid": [
+      "Meme-y slang and dense subordinate clauses.",
+      "Run-on sentences.",
+      "Overuse of triads or repetition."
+    ]
+  },
+  "cadenceMarkup": [
+    {
+      "description": "Short pause (comma)",
+      "example": "We are not here to perform. [p150] We are here to build.",
+      "ssmlSnippet": "<break time=\"150ms\"/>"
+    },
+    {
+      "description": "Medium pause (sentence / beat)",
+      "example": "And we are here to do it together. [p350]",
+      "ssmlSnippet": "<break time=\"350ms\"/>"
+    },
+    {
+      "description": "Long pause (paragraph / topic shift)",
+      "example": "That means follow-through. [p800] Now, let's get specific.",
+      "ssmlSnippet": "<break time=\"800ms\"/>"
+    },
+    {
+      "description": "Emphasis on key word",
+      "example": "*Now*, let's get specific.",
+      "ssmlSnippet": "<emphasis level=\"moderate\">Now</emphasis>"
+    }
+  ],
+  "ssmlDefaults": {
+    "ratePercent": 92,
+    "pitchPercent": -2,
+    "emphasisLevel": "moderate",
+    "exampleFragment": "<speak><prosody rate=\"92%\" pitch=\"-2%\">We are not here to perform. <break time=\"350ms\"/> We are here to build. <break time=\"350ms\"/> And we are here to do it together. <break time=\"650ms\"/> That means discipline. <break time=\"150ms\"/> That means clarity. <break time=\"150ms\"/> That means follow-through. <break time=\"450ms\"/> <emphasis level=\"moderate\">Now</emphasis>, let's get specific. <break time=\"350ms\"/></prosody></speak>"
+  },
+  "voice": {
+    "pitchRange": "low to mid",
+    "traits": ["clean articulation", "controlled expressiveness", "good sentence boundary modeling"],
+    "stability": "high",
+    "styleExaggeration": "low",
+    "googleVoiceName": "en-US-Neural2-D"
+  },
+  "config": {
+    "PERSONA_CADENCE_PROFILE": "orator_v1",
+    "ORATOR_RATE": 0.92,
+    "ORATOR_PITCH_PERCENT": -2,
+    "PAUSE_COMMA_MS": 150,
+    "PAUSE_PERIOD_MS": 350,
+    "PAUSE_PARAGRAPH_MS": 800,
+    "EMPHASIS_LEAD_IN_MS": 450,
+    "EMPHASIS_PER_WORDS": 14
+  }
+}
