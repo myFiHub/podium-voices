@@ -1,0 +1,334 @@
+Supported voices and languages
+
+Cloud TTS generates audio with natural, human-like quality, which creates speech that sounds like a real person. To start, specify a voice when sending a synthesis request.
+
+To use these voices to create synthetic speech, see how to create Long audio or Bidirectional streaming synthesis requests and use the VoiceSelectionParamsfield in your API request.
+
+Overview
+Voice type		Intended for	Launch stage	Controllability	Streaming
+Chirp 3: HD voices	Conversational Agents
+GA	-	Yes
+Studio	Two speakers group	Media: Discussions and Interviews
+
+Experimental	-	-
+One speaker person	Media: Narration
+GA	SSML	-
+Neural2	General purpose
+GA	SSML	-
+WaveNet	General purpose
+GA	SSML	-
+Standard	Cost efficient
+GA	SSML	-
+Pricing Details
+
+Chirp 3: HD voices
+Chirp 3: HD voices are driven by technology that captures nuances in human intonation, which make conversations more engaging. These voices are in 30 distinct styles across many languages, which are suitable for real-time and standard applications. Chirp 3: HD voices support advanced audio controls and low-latency real-time communication using text streaming.
+
+Chat experiences
+
+Voice: en-US-Chirp-HD-F
+
+Other examples
+Note: Chirp 3: HD voices doesn't support SSML input, speaking rate and pitch-audio parameters, and the A-Law audio encoding. It's available in the global, eu, and us endpoints but is out of scope for regionalization and data residency.
+Studio multispeaker voices
+Create discussions and interviews with the multispeaker studio voices, which is based on the same technology behind Chirp 3: HD voices voices.
+
+
+Example: Studio multispeaker voices
+
+Studio voices
+Studio voices are designed for news reading and broadcast content.
+
+
+Example: The en-US-Studio-O voice reading The Great Gatsby.
+
+Note: Studio voices support SSML, except for the following tags: <mark>, <emphasis>, <prosody pitch>, and <lang>. Check the table of supported voices for availability of Studio voices in specific languages.
+Neural2 voices
+The Cloud Text-to-Speech API provides a voice tier called Neural2. Neural2 voices are based on the same technology used to create a Custom Voice. Neural2 allows anyone to use Custom Voice technology without training their own custom voice. They're available in global and single region endpoints.
+
+Note: Check the table of supported voices for availability of Neural2 voices in specific languages.
+
+Example: Neural2 voice
+
+WaveNet voices
+In addition to traditional synthetic voices, Cloud TTS also provides premium, WaveNet-generated voices. You might find the Wavenet-generated voices to be more warm and human-like than other synthetic voices.
+
+The key difference to a WaveNet voice is the WaveNet model used to generate the voice. WaveNet models have been trained using raw audio samples of actual humans speaking. As a result, these models generate synthetic speech with more human-like emphasis and inflection on syllables, phonemes, and words.
+
+Compare the following two samples of synthetic speech.
+
+
+Example: Audio file generated with a standard voice
+
+
+Example: Audio file generated with a WaveNet voice
+
+To learn more about the benefits of WaveNet-generated voices, see Supported voices.
+
+Standard voices
+The voices offered by Cloud TTS differ in the synthetic speech technology used to create the machine model of the voice. One common speech technology, parametric text-to-speech, typically generates audio data by passing outputs through signal processing algorithms known as vocoders. Many of the standard voices available in Cloud TTS use a variation of this technology.
+
+List of all supported languages
+Note: We have introduced new voices that are outlined in the voice refresh plan.
+Note: ar-XA is Modern Standard Arabic (usually denoted as ar-001).
+Language	Voice type	Language code	Voice name	SSML Gender
+English (Australia)	Premium	en-AU	en-AU-Chirp-HD-D	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp-HD-F	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp-HD-O	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Achernar	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Achird	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Algenib	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Algieba	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Alnilam	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Aoede	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Autonoe	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Callirrhoe	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Charon	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Despina	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Enceladus	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Erinome	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Fenrir	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Gacrux	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Iapetus	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Kore	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Laomedeia	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Leda	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Orus	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Puck	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Pulcherrima	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Rasalgethi	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Sadachbia	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Sadaltager	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Schedar	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Sulafat	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Umbriel	MALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Vindemiatrix	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Zephyr	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Chirp3-HD-Zubenelgenubi	MALE	
+English (Australia)	Premium	en-AU	en-AU-Neural2-A	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Neural2-B	MALE	
+English (Australia)	Premium	en-AU	en-AU-Neural2-C	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Neural2-D	MALE	
+English (Australia)	Premium	en-AU	en-AU-News-E	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-News-F	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-News-G	MALE	
+English (Australia)	Premium	en-AU	en-AU-Polyglot-1	MALE	
+English (Australia)	Standard	en-AU	en-AU-Standard-A	FEMALE	
+English (Australia)	Standard	en-AU	en-AU-Standard-B	MALE	
+English (Australia)	Standard	en-AU	en-AU-Standard-C	FEMALE	
+English (Australia)	Standard	en-AU	en-AU-Standard-D	MALE	
+English (Australia)	Premium	en-AU	en-AU-Wavenet-A	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Wavenet-B	MALE	
+English (Australia)	Premium	en-AU	en-AU-Wavenet-C	FEMALE	
+English (Australia)	Premium	en-AU	en-AU-Wavenet-D	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp-HD-D	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp-HD-F	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp-HD-O	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Achernar	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Achird	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Algenib	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Algieba	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Alnilam	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Aoede	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Autonoe	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Callirrhoe	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Charon	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Despina	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Enceladus	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Erinome	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Fenrir	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Gacrux	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Iapetus	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Kore	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Laomedeia	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Leda	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Orus	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Puck	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Pulcherrima	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Rasalgethi	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Sadachbia	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Sadaltager	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Schedar	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Sulafat	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Umbriel	MALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Vindemiatrix	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Zephyr	FEMALE	
+English (India)	Premium	en-IN	en-IN-Chirp3-HD-Zubenelgenubi	MALE	
+English (India)	Premium	en-IN	en-IN-Neural2-A	FEMALE	
+English (India)	Premium	en-IN	en-IN-Neural2-B	MALE	
+English (India)	Premium	en-IN	en-IN-Neural2-C	MALE	
+English (India)	Premium	en-IN	en-IN-Neural2-D	FEMALE	
+English (India)	Standard	en-IN	en-IN-Standard-A	FEMALE	
+English (India)	Standard	en-IN	en-IN-Standard-B	MALE	
+English (India)	Standard	en-IN	en-IN-Standard-C	MALE	
+English (India)	Standard	en-IN	en-IN-Standard-D	FEMALE	
+English (India)	Standard	en-IN	en-IN-Standard-E	FEMALE	
+English (India)	Standard	en-IN	en-IN-Standard-F	MALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-A	FEMALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-B	MALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-C	MALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-D	FEMALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-E	FEMALE	
+English (India)	Premium	en-IN	en-IN-Wavenet-F	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp-HD-D	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp-HD-F	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp-HD-O	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Achernar	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Achird	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Algenib	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Algieba	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Alnilam	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Aoede	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Autonoe	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Callirrhoe	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Charon	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Despina	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Enceladus	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Erinome	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Fenrir	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Gacrux	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Iapetus	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Kore	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Laomedeia	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Leda	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Orus	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Puck	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Pulcherrima	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Rasalgethi	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Sadachbia	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Sadaltager	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Schedar	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Sulafat	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Umbriel	MALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Vindemiatrix	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Zephyr	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Chirp3-HD-Zubenelgenubi	MALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-A	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-B	MALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-C	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-D	MALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-F	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-N	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Neural2-O	MALE	
+English (UK)	Premium	en-GB	en-GB-News-G	FEMALE	
+English (UK)	Premium	en-GB	en-GB-News-H	FEMALE	
+English (UK)	Premium	en-GB	en-GB-News-I	FEMALE	
+English (UK)	Premium	en-GB	en-GB-News-J	MALE	
+English (UK)	Premium	en-GB	en-GB-News-K	MALE	
+English (UK)	Premium	en-GB	en-GB-News-L	MALE	
+English (UK)	Premium	en-GB	en-GB-News-M	MALE	
+English (UK)	Standard	en-GB	en-GB-Standard-A	FEMALE	
+English (UK)	Standard	en-GB	en-GB-Standard-B	MALE	
+English (UK)	Standard	en-GB	en-GB-Standard-C	FEMALE	
+English (UK)	Standard	en-GB	en-GB-Standard-D	MALE	
+English (UK)	Standard	en-GB	en-GB-Standard-F	FEMALE	
+English (UK)	Standard	en-GB	en-GB-Standard-N	FEMALE	
+English (UK)	Standard	en-GB	en-GB-Standard-O	MALE	
+English (UK)	Studio	en-GB	en-GB-Studio-B	MALE	
+English (UK)	Studio	en-GB	en-GB-Studio-C	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-A	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-B	MALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-C	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-D	MALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-F	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-N	FEMALE	
+English (UK)	Premium	en-GB	en-GB-Wavenet-O	MALE	
+English (US)	Premium	en-US	Achernar	FEMALE	
+English (US)	Premium	en-US	Achird	MALE	
+English (US)	Premium	en-US	Algenib	MALE	
+English (US)	Premium	en-US	Algieba	MALE	
+English (US)	Premium	en-US	Alnilam	MALE	
+English (US)	Premium	en-US	Aoede	FEMALE	
+English (US)	Premium	en-US	Autonoe	FEMALE	
+English (US)	Premium	en-US	Callirrhoe	FEMALE	
+English (US)	Premium	en-US	Charon	MALE	
+English (US)	Premium	en-US	Despina	FEMALE	
+English (US)	Premium	en-US	Enceladus	MALE	
+English (US)	Premium	en-US	Erinome	FEMALE	
+English (US)	Premium	en-US	Fenrir	MALE	
+English (US)	Premium	en-US	Gacrux	FEMALE	
+English (US)	Premium	en-US	Iapetus	MALE	
+English (US)	Premium	en-US	Kore	FEMALE	
+English (US)	Premium	en-US	Laomedeia	FEMALE	
+English (US)	Premium	en-US	Leda	FEMALE	
+English (US)	Premium	en-US	Orus	MALE	
+English (US)	Premium	en-US	Puck	MALE	
+English (US)	Premium	en-US	Pulcherrima	FEMALE	
+English (US)	Premium	en-US	Rasalgethi	MALE	
+English (US)	Premium	en-US	Sadachbia	MALE	
+English (US)	Premium	en-US	Sadaltager	MALE	
+English (US)	Premium	en-US	Schedar	MALE	
+English (US)	Premium	en-US	Sulafat	FEMALE	
+English (US)	Premium	en-US	Umbriel	MALE	
+English (US)	Premium	en-US	Vindemiatrix	FEMALE	
+English (US)	Premium	en-US	Zephyr	FEMALE	
+English (US)	Premium	en-US	Zubenelgenubi	MALE	
+English (US)	Premium	en-US	en-US-Casual-K	MALE	
+English (US)	Premium	en-US	en-US-Chirp-HD-D	MALE	
+English (US)	Premium	en-US	en-US-Chirp-HD-F	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp-HD-O	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Achernar	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Achird	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Algenib	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Algieba	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Alnilam	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Aoede	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Autonoe	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Callirrhoe	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Charon	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Despina	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Enceladus	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Erinome	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Fenrir	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Gacrux	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Iapetus	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Kore	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Laomedeia	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Leda	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Orus	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Puck	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Pulcherrima	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Rasalgethi	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Sadachbia	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Sadaltager	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Schedar	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Sulafat	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Umbriel	MALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Vindemiatrix	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Zephyr	FEMALE	
+English (US)	Premium	en-US	en-US-Chirp3-HD-Zubenelgenubi	MALE	
+English (US)	Premium	en-US	en-US-Neural2-A	MALE	
+English (US)	Premium	en-US	en-US-Neural2-C	FEMALE	
+English (US)	Premium	en-US	en-US-Neural2-D	MALE	
+English (US)	Premium	en-US	en-US-Neural2-E	FEMALE	
+English (US)	Premium	en-US	en-US-Neural2-F	FEMALE	
+English (US)	Premium	en-US	en-US-Neural2-G	FEMALE	
+English (US)	Premium	en-US	en-US-Neural2-H	FEMALE	
+English (US)	Premium	en-US	en-US-Neural2-I	MALE	
+English (US)	Premium	en-US	en-US-Neural2-J	MALE	
+English (US)	Premium	en-US	en-US-News-K	FEMALE	
+English (US)	Premium	en-US	en-US-News-L	FEMALE	
+English (US)	Premium	en-US	en-US-News-N	MALE	
+English (US)	Premium	en-US	en-US-Polyglot-1	MALE	
+English (US)	Standard	en-US	en-US-Standard-A	MALE	
+English (US)	Standard	en-US	en-US-Standard-B	MALE	
+English (US)	Standard	en-US	en-US-Standard-C	FEMALE	
+English (US)	Standard	en-US	en-US-Standard-D	MALE	
+English (US)	Standard	en-US	en-US-Standard-E	FEMALE	
+English (US)	Standard	en-US	en-US-Standard-F	FEMALE	
+English (US)	Standard	en-US	en-US-Standard-G	FEMALE	
+English (US)	Standard	en-US	en-US-Standard-H	FEMALE	
+English (US)	Standard	en-US	en-US-Standard-I	MALE	
+English (US)	Standard	en-US	en-US-Standard-J	MALE	
+English (US)	Studio	en-US	en-US-Studio-O	FEMALE	
+English (US)	Studio	en-US	en-US-Studio-Q	MALE	
+English (US)	Premium	en-US	en-US-Wavenet-A	MALE	
+English (US)	Premium	en-US	en-US-Wavenet-B	MALE	
+English (US)	Premium	en-US	en-US-Wavenet-C	FEMALE	
+English (US)	Premium	en-US	en-US-Wavenet-D	MALE	
+English (US)	Premium	en-US	en-US-Wavenet-E	FEMALE	
+English (US)	Premium	en-US	en-US-Wavenet-F	FEMALE	
+English (US)	Premium	en-US	en-US-Wavenet-G	FEMALE	
+English (US)	Premium	en-US	en-US-Wavenet-H	FEMALE	
+English (US)	Premium	en-US	en-US-Wavenet-I	MALE	
+English (US)	Premium	en-US	en-US-Wavenet-J	MALE

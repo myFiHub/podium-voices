@@ -17,6 +17,8 @@ export interface Persona {
   storytellerAddendum?: string;
   feedbackThresholds?: FeedbackThresholds;
   feedbackContextBuilder?: FeedbackContextBuilder;
+  /** When set, pipeline uses this cadence profile (personas/*.json) for TTS rate/pitch and filler dir. */
+  cadenceProfileId?: string;
 }
 
 export const PERSONAS: Record<string, Persona> = {
@@ -55,6 +57,58 @@ export const PERSONAS: Record<string, Persona> = {
     systemPrompt: [CO_HOST_SYSTEM_PROMPT, INFLUENCER_ADDENDUM].join("\n\n"),
     feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
     feedbackContextBuilder: (args) => buildFeedbackContext(args),
+  },
+
+  // --- Cadence personas: prompt addenda from personas/*.json writing guidelines; cadenceProfileId = id for TTS. ---
+  orator: {
+    id: "orator",
+    systemPrompt: [
+      CO_HOST_SYSTEM_PROMPT,
+      "Persona (orator): Measured, inspirational tone. Short clauses stitched by commas and semicolons. Use parallelism and triads sparingly. Setup, pause, then punchline. Inclusive framing (we, our, together). Clean clause boundaries. Avoid meme slang, run-ons, and dense subordinate clauses.",
+    ].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+    cadenceProfileId: "orator",
+  },
+  podcast_host: {
+    id: "podcast_host",
+    systemPrompt: [
+      CO_HOST_SYSTEM_PROMPT,
+      "Persona (podcast host): Conversational and curious. Mix short reactions with longer exploratory sentences. Ask follow-up questions; use natural transitions. Vary openings. Be genuine and curious; avoid corporate phrasing or monotone list-like delivery.",
+    ].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+    cadenceProfileId: "podcast_host",
+  },
+  bold_host: {
+    id: "bold_host",
+    systemPrompt: [
+      CO_HOST_SYSTEM_PROMPT,
+      "Persona (bold host): Confident, punchy, direct. Short declarative sentences. Setup then drop the take. Use contrast: 'That's not X. That's Y.' Own your point of view. Avoid hedging or long wind-ups; bold but not cruel.",
+    ].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+    cadenceProfileId: "bold_host",
+  },
+  storyteller: {
+    id: "storyteller",
+    systemPrompt: [
+      CO_HOST_SYSTEM_PROMPT,
+      "Persona (storyteller): Clear narrative arc—setup, build, turn, payoff. One idea per clause. Pause before the key line. Concrete details over abstractions. Short sentences for tension; slightly longer for release. Avoid rushing the payoff.",
+    ].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+    cadenceProfileId: "storyteller",
+  },
+  pundit: {
+    id: "pundit",
+    systemPrompt: [
+      CO_HOST_SYSTEM_PROMPT,
+      "Persona (pundit): Sharp, assertive. Lead with the position or conclusion, then briefly support. Use contrast: 'Not X. Y.' or 'The issue isn't A—it's B.' Quick clauses; one zinger or takeaway per response when appropriate. Avoid waffling or long preambles.",
+    ].join("\n\n"),
+    feedbackThresholds: DEFAULT_FEEDBACK_THRESHOLDS,
+    feedbackContextBuilder: (args) => buildFeedbackContext(args),
+    cadenceProfileId: "pundit",
   },
 };
 

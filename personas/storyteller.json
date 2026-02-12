@@ -1,0 +1,86 @@
+{
+  "id": "storyteller",
+  "name": "The Storyteller",
+  "inspiration": "TED / narrative speaker—clear arcs, tension and release, vivid but not overwrought. One idea per beat, build to a payoff.",
+  "styleContract": {
+    "wpm": {
+      "baseline": { "min": 130, "max": 155 },
+      "stakes": { "min": 115, "max": 138 },
+      "connective": { "min": 148, "max": 168 }
+    },
+    "pauseBudget": { "targetFraction": { "min": 0.14, "max": 0.24 } },
+    "pauseTiers": {
+      "commaMs": { "min": 130, "max": 200 },
+      "periodMs": { "min": 300, "max": 500 },
+      "paragraphMs": { "min": 700, "max": 950 },
+      "emphasisLeadInMs": { "min": 400, "max": 650 }
+    },
+    "phraseAndEmphasis": {
+      "wordsPerClause": { "min": 7, "max": 13 },
+      "emphasisPerWords": 12
+    },
+    "intonation": {
+      "description": "Moderate pitch range; build slightly through the arc; clear rise before the turn; satisfying fall on the payoff.",
+      "pitchPercent": -1
+    }
+  },
+  "writingGuidelines": {
+    "summary": "Narrative structure: setup, build, turn, payoff. One clear idea per clause. Vivid but concise. Pause before the key revelation or lesson.",
+    "sentenceArchitecture": [
+      "One idea per clause. Clean boundaries.",
+      "Use a clear arc: setup → build → turn → payoff.",
+      "Pause before the key line (emphasis lead-in).",
+      "Parallelism for lists of three when listing steps or moments."
+    ],
+    "prefer": [
+      "Concrete details over abstractions when possible.",
+      "Short sentences for tension; slightly longer for release.",
+      "Inclusive 'you' or 'we' when delivering the takeaway."
+    ],
+    "avoid": [
+      "Rushing the payoff. Let the pause do work.",
+      "Too many adjectives. One strong word beats three weak ones.",
+      "Vague or generic endings."
+    ]
+  },
+  "cadenceMarkup": [
+    {
+      "description": "Build pause (before turn)",
+      "example": "And then something shifted. [p500] *That* was the moment.",
+      "ssmlSnippet": "<break time=\"500ms\"/>"
+    },
+    {
+      "description": "Paragraph / scene change",
+      "example": "So what do we do with that? [p800] We choose to show up.",
+      "ssmlSnippet": "<break time=\"800ms\"/>"
+    },
+    {
+      "description": "Emphasis on revelation",
+      "example": "The *real* lesson wasn't about winning.",
+      "ssmlSnippet": "<emphasis level=\"moderate\">real</emphasis>"
+    }
+  ],
+  "ssmlDefaults": {
+    "ratePercent": 92,
+    "pitchPercent": -1,
+    "emphasisLevel": "moderate",
+    "exampleFragment": "<speak><prosody rate=\"92%\" pitch=\"-1%\">Picture this. <break time=\"350ms\"/> You're in the room. <break time=\"200ms\"/> Everything's on the line. <break time=\"450ms\"/> And then something shifted. <break time=\"500ms\"/> <emphasis level=\"moderate\">That</emphasis> was the moment. <break time=\"700ms\"/> So what do we do with that? <break time=\"800ms\"/> We choose to show up.</prosody></speak>"
+  },
+  "voice": {
+    "pitchRange": "low to mid",
+    "traits": ["clear", "narrative pacing", "good pause modeling", "warm but composed"],
+    "stability": "high",
+    "styleExaggeration": "low",
+    "googleVoiceName": "en-US-Neural2-C"
+  },
+  "config": {
+    "PERSONA_CADENCE_PROFILE": "storyteller_v1",
+    "ORATOR_RATE": 0.92,
+    "ORATOR_PITCH_PERCENT": -1,
+    "PAUSE_COMMA_MS": 160,
+    "PAUSE_PERIOD_MS": 400,
+    "PAUSE_PARAGRAPH_MS": 800,
+    "EMPHASIS_LEAD_IN_MS": 500,
+    "EMPHASIS_PER_WORDS": 12
+  }
+}

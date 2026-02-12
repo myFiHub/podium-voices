@@ -41,8 +41,10 @@ export interface OrchestratorConfig {
     coordinatorClient?: ICoordinatorClient;
     /** Optional filler engine config for latency masking (play short clip before main reply). */
     fillerConfig?: FillerEngineConfig;
-    /** Persona ID for filler selection (e.g. "default", "hype"). */
+    /** Persona ID for filler selection (e.g. "default", "hype", "orator"). */
     personaId?: string;
+    /** When set, TTS uses this cadence profile (personas/*.json) for rate/pitch. Typically same as personaId for cadence personas. */
+    cadenceProfileId?: string;
 }
 export declare class Orchestrator {
     private readonly asr;
@@ -75,9 +77,12 @@ export declare class Orchestrator {
     private readonly personaplexFallbackToLlm;
     private readonly fillerConfig?;
     private readonly personaId;
+    private readonly cadenceProfileId?;
     /** Set when main TTS starts so filler playback aborts. */
     private fillerAbort;
     constructor(asr: IASR, llm: ILLM, tts: ITTS, memory: ISessionMemory, config: OrchestratorConfig, callbacks?: PipelineCallbacks);
+    /** Voice options for TTS: sample rate, rate/pitch, and optional voice name from cadence profile when set. */
+    private getVoiceOptionsForTts;
     /** Capture barge-in stop latency (ms) and clear; call when recording turn metrics. */
     private captureBargeInLatency;
     /**

@@ -99,6 +99,7 @@ async function main(): Promise<void> {
     coordinatorClient,
     fillerConfig: { basePath: path.join(process.cwd(), "assets", "fillers") },
     personaId: config.agent.personaId,
+    cadenceProfileId: persona.cadenceProfileId,
   }, {
     onUserTranscript: (text) => {
       const shouldLogText = (() => {
@@ -290,17 +291,39 @@ async function main(): Promise<void> {
     const openerDelayMs = config.pipeline.openerDelayMs ?? 0;
     const openerMaxTokens = config.pipeline.openerMaxTokens ?? 180;
     const topicSeed = config.pipeline.topicSeed?.trim() || "";
+    const mockTtsOutput = process.env.MOCK_TTS_OUTPUT?.trim();
+    const flushAndExit = (): void => {
+      if (mockRoom && mockTtsOutput) {
+        try {
+          const outPath = mockRoom.flushTtsToFile();
+          logger.info({ event: "MOCK_TTS_FLUSH", path: outPath }, "Wrote TTS to file; exiting.");
+        } catch (e) {
+          logger.warn({ event: "MOCK_TTS_FLUSH_FAILED", err: (e as Error).message }, "Failed to flush TTS to file");
+        }
+        process.exit(0);
+      }
+    };
     if (greetingText && greetingDelayMs >= 0) {
       setTimeout(() => {
-        orchestrator.speakProactively(greetingText).catch((err) =>
-          logger.warn({ event: "GREETING_FAILED", err: (err as Error).message }, "Proactive greeting failed")
-        );
+        orchestrator
+          .speakProactively(greetingText)
+          .then(() => {
+            if (mockTtsOutput) setTimeout(flushAndExit, 500);
+          })
+          .catch((err) =>
+            logger.warn({ event: "GREETING_FAILED", err: (err as Error).message }, "Proactive greeting failed")
+          );
       }, greetingDelayMs);
     } else if (openerEnabled && openerDelayMs >= 0) {
       setTimeout(() => {
-        orchestrator.speakOpener({ topicSeed, outpostContext: "", maxTokens: openerMaxTokens }).catch((err) =>
-          logger.warn({ event: "OPENER_FAILED", err: (err as Error).message }, "Opener failed")
-        );
+        orchestrator
+          .speakOpener({ topicSeed, outpostContext: "", maxTokens: openerMaxTokens })
+          .then(() => {
+            if (mockTtsOutput) setTimeout(flushAndExit, 500);
+          })
+          .catch((err) =>
+            logger.warn({ event: "OPENER_FAILED", err: (err as Error).message }, "Opener failed")
+          );
       }, openerDelayMs);
     }
   }
