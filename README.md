@@ -69,14 +69,16 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 4. **Production (Docker)**
 
-   For production, run the agent (and optional Turn Coordinator) with Docker Compose. Build and start:
+   For production, run the agent (and optional Turn Coordinator) with Docker Compose. The image is built with a multi-stage Dockerfile (TypeScript compiles in a builder stage; the final image contains only production dependencies and the built `dist/`).
+
+   **Build and start** (using your local env file for secrets and config):
 
    ```bash
-   docker compose build
-   docker compose up -d
+   docker compose --env-file .env.local build
+   docker compose --env-file .env.local up -d
    ```
 
-   Inject `PODIUM_TOKEN` via your secret manager or environment; never bake secrets into the image. Use the same env vars as in Setup (e.g. pass through from host or a mounted env file). See `docker-compose.yml` for required and optional environment variables.
+   Or export variables in your shell and run `docker compose up -d`. Inject `PODIUM_TOKEN` via your secret manager or environment; never bake secrets into the image. For more options (mounting a token file, required env vars), see [docs/DOCKER.md](docs/DOCKER.md).
 
 ## Bot behavior
 
