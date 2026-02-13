@@ -110,6 +110,10 @@ export interface AppConfig {
     openerMaxTokens?: number;
     /** Optional topic seed override (env/config). */
     topicSeed?: string;
+    /** Run summarizer every N assistant turns (default 10). */
+    runningSummaryTurnInterval?: number;
+    /** Enable running summary and persistence (default true). */
+    runningSummaryEnabled?: boolean;
   };
 
   /** Agent/persona behavior configuration */
@@ -136,6 +140,25 @@ function getEnv(key: string, defaultValue?: string): string | undefined {
   const v = process.env[key];
   if (v === undefined || v === "") return defaultValue;
   return v.trim();
+}
+
+/**
+ * Resolve Podium token: PODIUM_TOKEN if set, else read from PODIUM_TOKEN_FILE (sync, trimmed).
+ * Allows deployment to mount a secret at e.g. /run/secrets/podium_token and set PODIUM_TOKEN_FILE so the token is not in env.
+ */
+function resolvePodiumToken(): string | undefined {
+  const fromEnv = getEnv("PODIUM_TOKEN");
+  if (fromEnv) return fromEnv;
+  const filePath = getEnv("PODIUM_TOKEN_FILE");
+  if (!filePath) return undefined;
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const token = raw.trim();
+    return token || undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`PODIUM_TOKEN_FILE ${filePath} read failed: ${message}`);
+  }
 }
 
 function getEnvRequired(key: string): string {
@@ -205,7 +228,7 @@ export function loadConfig(): AppConfig {
       apiUrl: getEnv("NEXT_PUBLIC_PODIUM_API_URL") || "https://api.podium.example.com/api/v1",
       wsAddress: getEnv("NEXT_PUBLIC_WEBSOCKET_ADDRESS") || "wss://ws.podium.example.com/ws",
       outpostServer: getEnv("NEXT_PUBLIC_OUTPOST_SERVER") || "meet.jit.si",
-      token: getEnv("PODIUM_TOKEN"),
+      token: resolvePodiumToken(),
       outpostUuid: getEnv("PODIUM_OUTPOST_UUID"),
       useJitsiBot: getEnv("USE_JITSI_BOT") === "true" || getEnv("USE_JITSI_BOT") === "1",
       botPageUrl: getEnv("BOT_PAGE_URL"),
@@ -256,6 +279,13 @@ export function loadConfig(): AppConfig {
         return Number.isNaN(n) || n <= 0 ? 180 : n;
       })(),
       topicSeed: getEnv("TOPIC_SEED"),
+      runningSummaryTurnInterval: (() => {
+        const v = getEnv("RUNNING_SUMMARY_TURN_INTERVAL");
+        if (v == null || v === "") return 10;
+        const n = parseInt(v, 10);
+        return Number.isNaN(n) || n < 1 ? 10 : Math.min(n, 100);
+      })(),
+      runningSummaryEnabled: getEnv("RUNNING_SUMMARY_ENABLED") !== "false" && getEnv("RUNNING_SUMMARY_ENABLED") !== "0",
     },
     agent: {
       personaId: getEnv("PERSONA_ID") || "default",

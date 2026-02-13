@@ -12,13 +12,20 @@ export interface PodiumWSConfig {
     timezone?: string;
 }
 export type WSMessageHandler = (msg: WSInMessage) => void;
+/** Callback when WS disconnects (close or error after being connected). Used by RoomClient for reconnect. */
+export type OnDisconnectedCallback = () => void;
 export declare class PodiumWS {
     private ws;
     private readonly config;
     private handlers;
+    private onDisconnectedCb;
     constructor(config: PodiumWSConfig);
+    /** Set callback to be invoked when the WebSocket disconnects (close or error). */
+    setOnDisconnected(cb: OnDisconnectedCallback | null): void;
     onMessage(handler: WSMessageHandler): void;
     connect(): Promise<void>;
+    /** Disconnect and clear socket (e.g. before reconnect). */
+    disconnect(): void;
     send(msg: WSOutMessage | Record<string, unknown>): void;
     /** Send JOIN and wait for user.joined for this user (match by address or uuid). */
     joinOutpost(outpostUuid: string, myAddress: string, options?: {

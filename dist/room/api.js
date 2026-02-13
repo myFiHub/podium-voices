@@ -2,9 +2,11 @@
 /**
  * Podium REST API client.
  * Auth: Authorization: Bearer <token>. Base URL from config.
+ * On 401/403 logs AUTH_FAILURE for alerting (see docs/TOKEN_ROTATION_SOP.md).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PodiumApi = void 0;
+const logging_1 = require("../logging");
 class PodiumApi {
     config;
     constructor(config) {
@@ -26,6 +28,9 @@ class PodiumApi {
         const response = await fetch(url, options);
         if (!response.ok) {
             const text = await response.text();
+            if (response.status === 401 || response.status === 403) {
+                logging_1.logger.warn({ event: "AUTH_FAILURE", source: "api", method, path, status: response.status }, "Podium API auth failure – token may be invalid or expired");
+            }
             throw new Error(`Podium API ${method} ${path}: ${response.status} ${text}`);
         }
         if (response.status === 204)

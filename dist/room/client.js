@@ -3,6 +3,7 @@
  * High-level Podium room client: runs host join flow and exposes audio in/out.
  * Uses REST (api), WebSocket (ws), and Jitsi (jitsi) to join as host; then provides
  * incoming audio stream for the pipeline and a method to push TTS output.
+ * Implements WS reconnect with exponential backoff + jitter; Jitsi start with retry.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RoomClient = void 0;
@@ -10,6 +11,21 @@ const api_1 = require("./api");
 const ws_1 = require("./ws");
 const jitsi_1 = require("./jitsi");
 const vad_1 = require("../pipeline/vad");
+const logging_1 = require("../logging");
+const JITSI_START_ATTEMPTS = 3;
+const JITSI_START_DELAY_MS_MIN = 2000;
+const JITSI_START_DELAY_MS_MAX = 5000;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 60000;
+const RECONNECT_CAP = 60_000;
+function jitter(minMs, maxMs) {
+    return Math.floor(minMs + Math.random() * (maxMs - minMs + 1));
+}
+function backoffDelay(attempt) {
+    const exp = Math.min(RECONNECT_BASE_MS * Math.pow(2, attempt), RECONNECT_MAX_MS);
+    const withJitter = Math.floor(exp * (0.8 + Math.random() * 0.4));
+    return Math.min(withJitter, RECONNECT_CAP);
+}
 class RoomClient {
     api;
     ws;
@@ -18,6 +34,9 @@ class RoomClient {
     outpost = null;
     config;
     callbacks = {};
+    reconnectAttempts = 0;
+    reconnectTimer = null;
+    isLeaving = false;
     constructor(config) {
         this.config = config;
         this.api = new api_1.PodiumApi({ baseUrl: config.apiUrl, token: config.token });
@@ -25,6 +44,37 @@ class RoomClient {
             wsAddress: config.wsAddress,
             token: config.token,
         });
+        this.ws.setOnDisconnected(() => this.scheduleReconnect());
+    }
+    scheduleReconnect() {
+        if (this.isLeaving || !this.user || !this.outpost)
+            return;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        const delayMs = backoffDelay(this.reconnectAttempts);
+        this.reconnectAttempts++;
+        logging_1.logger.info({ event: "WS_RECONNECT_SCHEDULED", delayMs, attempt: this.reconnectAttempts }, "WebSocket disconnected; scheduling reconnect");
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.doReconnect().catch((err) => {
+                logging_1.logger.warn({ event: "WS_RECONNECT_FAILED", err: err.message }, "Reconnect failed; will retry on next disconnect or watchdog");
+            });
+        }, delayMs);
+    }
+    async doReconnect() {
+        if (!this.user || !this.outpost)
+            return;
+        this.ws.disconnect();
+        await this.ws.connect();
+        await this.api.addMeAsMember(this.config.outpostUuid);
+        await this.ws.joinOutpost(this.config.outpostUuid, this.user.address, {
+            myUuid: this.user.uuid,
+            timeoutMs: 15000,
+        });
+        this.reconnectAttempts = 0;
+        logging_1.logger.info({ event: "WS_RECONNECTED" }, "WebSocket reconnected and re-joined outpost");
     }
     onAudioChunk(cb) {
         this.callbacks.onAudioChunk = cb;
@@ -77,7 +127,25 @@ class RoomClient {
             }
         });
         if (typeof this.jitsi.start === "function") {
-            await this.jitsi.start();
+            let lastErr = null;
+            for (let attempt = 1; attempt <= JITSI_START_ATTEMPTS; attempt++) {
+                try {
+                    await this.jitsi.start();
+                    lastErr = null;
+                    break;
+                }
+                catch (err) {
+                    lastErr = err instanceof Error ? err : new Error(String(err));
+                    logging_1.logger.warn({ event: "JITSI_START_FAILED", attempt, maxAttempts: JITSI_START_ATTEMPTS, err: lastErr.message }, "Jitsi start failed; retrying");
+                    if (attempt < JITSI_START_ATTEMPTS) {
+                        const delay = jitter(JITSI_START_DELAY_MS_MIN, JITSI_START_DELAY_MS_MAX);
+                        await new Promise((r) => setTimeout(r, delay));
+                    }
+                }
+            }
+            if (lastErr) {
+                throw lastErr;
+            }
         }
         return { user: this.user, outpost: this.outpost };
     }
@@ -107,6 +175,12 @@ class RoomClient {
     }
     /** Leave outpost and close connections. */
     async leave() {
+        this.isLeaving = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.ws.setOnDisconnected(null);
         if (this.jitsi)
             await this.jitsi.leave();
         if (this.outpost) {

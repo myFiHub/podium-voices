@@ -95,6 +95,10 @@ export interface AppConfig {
         openerMaxTokens?: number;
         /** Optional topic seed override (env/config). */
         topicSeed?: string;
+        /** Run summarizer every N assistant turns (default 10). */
+        runningSummaryTurnInterval?: number;
+        /** Enable running summary and persistence (default true). */
+        runningSummaryEnabled?: boolean;
     };
     /** Agent/persona behavior configuration */
     agent: {

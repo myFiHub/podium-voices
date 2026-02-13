@@ -25,6 +25,12 @@ export interface TurnMetrics {
   turnId?: string;
   /** Request ID for correlation. */
   requestId?: string;
+  /** Persona ID for this turn (e.g. default, hype). */
+  personaId?: string;
+  /** Feedback behavior level at turn start (e.g. high_negative, neutral). */
+  feedbackLevel?: string;
+  /** Approximate response token count (e.g. from reply length). */
+  responseTokens?: number;
 }
 
 /** Audio bridge / bot stats (from browser or Node). */
@@ -52,6 +58,9 @@ export function recordTurnMetrics(metrics: TurnMetrics): void {
       barge_in_stop_latency_ms: metrics.bargeInStopLatencyMs,
       turn_id: metrics.turnId,
       request_id: metrics.requestId,
+      persona_id: metrics.personaId,
+      feedback_level: metrics.feedbackLevel,
+      response_tokens: metrics.responseTokens,
     },
     "Turn latency"
   );

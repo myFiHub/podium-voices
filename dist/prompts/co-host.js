@@ -43,13 +43,13 @@ function buildFeedbackLine(sentiment, lastMinute) {
 function buildFeedbackContext(args) {
     const level = args.behaviorLevel ?? "neutral";
     if (level === "high_positive") {
-        return "Audience feedback: The room is very enthusiastic (many cheers/likes). Match the energy and lean into what’s working.";
+        return "Audience feedback: The room is very enthusiastic (many cheers/likes). Match the energy and lean into what’s working. Audience is very positive; you may extend slightly or invite a prompt.";
     }
     if (level === "positive") {
         return "Audience feedback: The room seems positive. Keep the vibe upbeat and invite more participation.";
     }
     if (level === "high_negative") {
-        return "Audience feedback: Strong negative reactions (boos/dislikes). De-escalate: shorten replies, change topic, or ask a question to reset.";
+        return "Audience feedback: Strong negative reactions (boos/dislikes). De-escalate: shorten replies, change topic, or ask a question to reset. Keep this reply very short and ask a new question or change topic.";
     }
     if (level === "negative") {
         return "Audience feedback: Some negative reactions. Adjust tone, clarify, and consider changing approach or topic.";

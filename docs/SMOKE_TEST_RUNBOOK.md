@@ -85,7 +85,28 @@ If the bot participant disappears from the outpost and you see yourself alone in
 
 3. **If the bot keeps dropping:** Check Jitsi/server logs (e.g. Prosody, JVB) for kicks or connection timeouts. Jitsi warnings in the bot console (e.g. “invalid session id”, “description does not look like plan-b”, “AudioOutputProblemDetector”) can precede a teardown; improving network/TURN or server config may reduce drops.
 
-## 5. Automated smoke script (optional)
+## 5. MVP preflight test matrix
+
+Before each public session, run the [preflight checklist](MVP_DEFINITION_OF_DONE.md#preflight-checklist-before-each-public-session). This table maps each item to concrete steps:
+
+| Check | How to run | Pass criteria |
+|-------|------------|---------------|
+| Single agent, 5‑min topic | `USE_JITSI_BOT=true npm run smoke` (or `node scripts/smoke.js 5`) | Agent joins, opener or greeting, at least one USER_TRANSCRIPT + AGENT_REPLY in logs. |
+| Single agent + reactions | Manual: run agent, trigger cheer/boo in UI, speak again. | Next reply tone/length changes (shorter on boo, upbeat on cheer). |
+| Multi-agent ~10 min | Start coordinator, then 2 agents (see README multi-agent). Optional: `E2E_PRESET=prod-podcast node scripts/e2e-two-bot.js`. | Turn-taking, no overlap; E2E reports PASS when join + at least one reply. |
+| Network blip | Manual: kill WS or disconnect network briefly; or restart process. | Reconnect or process restart; agent rejoins and responds within ~60s. |
+| Token invalid | Set wrong `PODIUM_TOKEN`, start agent. | Logs show `AUTH_FAILURE` or join failure; alerting can key off `AUTH_FAILURE`. |
+
+**One-command preflight (single-agent smoke):**
+
+```bash
+USE_JITSI_BOT=true npm run smoke
+# Exit 0 = PASS (USER_TRANSCRIPT + AGENT_REPLY seen). Exit 1 = FAIL or process error.
+```
+
+Optional: run E2E preset after smoke for multi-agent coverage: `E2E_PRESET=prod-podcast node scripts/e2e-two-bot.js`.
+
+## 6. Automated smoke script (optional)
 
 Run the smoke script to start the process for a fixed duration and check logs for transcript and reply:
 
@@ -104,3 +125,7 @@ See `scripts/smoke.js` for duration (default 2 minutes) and pass/fail criteria (
 |-------|--------|
 | `BOT_BRIDGE_DISCONNECTED` | Bridge WebSocket closed; bot is no longer in the room. Restart process to rejoin. |
 | `BOT_PAGE_CLOSED` | Bot browser page closed or crashed. Restart process to rejoin. |
+
+---
+
+**Health endpoints (agent):** `GET /health` (liveness) and `GET /ready` (readiness) on `HEALTH_PORT` (default 8080). Coordinator: `GET /health` on `COORDINATOR_PORT` (default 3001).

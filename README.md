@@ -2,6 +2,8 @@
 
 Minimum viable AI co-host for Podium Outpost audio rooms. The agent joins the room using the configured token (permission is enforced by the Podium API), transcribes live speech (ASR), generates responses with an LLM, and speaks via TTS. The pipeline is **modular**: ASR, LLM, and TTS can be swapped via config (e.g. OpenAI now, self-hosted later).
 
+**MVP launch criteria:** See [docs/MVP_DEFINITION_OF_DONE.md](docs/MVP_DEFINITION_OF_DONE.md) for what "done" means (reliable join, 5–20 min segment, feedback-driven behavior, self-recovery, telemetry) and the preflight checklist before public sessions.
+
 ## Conversation backends
 
 You choose **how each agent produces spoken replies**: the **standard pipeline** (ASR → LLM → TTS) or the **PersonaPlex** speech-to-speech backend. In **multi-agent** setups, each agent process can use a **different** backend (e.g. one agent on PersonaPlex, another on ASR/LLM/TTS).
@@ -36,7 +38,7 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 2. **Environment**
 
-   Copy `.env.example` to `.env.local` and set:
+   Use `.env.example` as a template only; real values go in `.env.local` (local) or a secret manager (production). Never commit `.env.local` or any file containing real secrets. Copy `.env.example` to `.env.local` and set:
 
    - **Conversation backend (optional)**: Set `CONVERSATION_BACKEND=personaplex` and configure `PERSONAPLEX_SERVER_URL` + `PERSONAPLEX_VOICE_PROMPT`. For dev self-signed certs, set `PERSONAPLEX_SSL_INSECURE=true` (unsafe for production).
    - **OpenAI**: `OPENAI_API_KEY` (for Whisper ASR and GPT-4/3.5).
@@ -64,6 +66,17 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
    Without `PODIUM_TOKEN` and `PODIUM_OUTPOST_UUID`, the app uses a **mock room** (no real Podium connection). TTS output can be written to a file (see `MOCK_TTS_OUTPUT`). With Podium set but `USE_JITSI_BOT=false` (default), the app joins REST + WebSocket but uses a **Jitsi stub** (no conference audio); set `USE_JITSI_BOT=true` for real Jitsi audio via the browser bot.
 
    **WSL**: The Jitsi bot bridge binds to `0.0.0.0` so the headless browser can connect reliably in WSL2. If you see `BOT_BRIDGE_CONNECT_TIMEOUT`, ensure Chromium is installed (`npx playwright install chromium`) and that no firewall is blocking local connections.
+
+4. **Production (Docker)**
+
+   For production, run the agent (and optional Turn Coordinator) with Docker Compose. Build and start:
+
+   ```bash
+   docker compose build
+   docker compose up -d
+   ```
+
+   Inject `PODIUM_TOKEN` via your secret manager or environment; never bake secrets into the image. Use the same env vars as in Setup (e.g. pass through from host or a mounted env file). See `docker-compose.yml` for required and optional environment variables.
 
 ## Bot behavior
 
@@ -100,7 +113,7 @@ The run passes when join, stability, stimulus publish, and at least one transcri
 - **Audio debug**: `DEBUG_AUDIO_FRAMES=1` adds a small per-frame header on the Node→browser TTS stream and logs `frame_ack` acks from the browser so we can verify byte-level integrity. `SAVE_TTS_WAV=1` saves short WAV captures to `debug-audio/` for offline inspection.
 - **Bot diagnostics (optional)**: **`BOT_DIAG=1`** runs a ~20s capture, writes `./logs/diag/*_stats.jsonl`, prints a verdict (e.g. `OK`, `INBOUND_RTP_BUT_PREMIX_SILENT`), then exits. **Leave unset or remove from `.env.local` for normal operation**; use only when debugging “bot doesn’t hear me” or receive-path issues. `BOT_DIAG_DURATION_MS` (default 20000), `PRE_MIXER_PASS_THRESHOLD`, `ARTIFACT_RETENTION_N` tune the diagnostic; see `.env.example` and [docs/AUDIO_DEBUGGING.md](docs/AUDIO_DEBUGGING.md).
 
-See `.env.example` for all variables.
+See `.env.example` for all variables. For **debate**, **interview**, or **hype**-style segments, see [docs/PRESETS.md](docs/PRESETS.md) for recommended env blocks.
 
 ### Multi-agent (Phase 1)
 
@@ -250,6 +263,10 @@ When the meet is served by the **official [jitsi/docker-jitsi-meet](https://gith
 **How to verify on the server:** See [docs/JITSI_DOCKER_CONFIG.md](docs/JITSI_DOCKER_CONFIG.md) for step-by-step commands to read `config.js` and env from the web and Prosody containers.
 
 **Next steps after configuring:** Set `JITSI_MUC_DOMAIN=muc.meet.jitsi` in `.env.local` (and `JITSI_XMPP_DOMAIN=meet.jitsi` if not already set), then `npm run build` and `npm start`. If the bot still fails to join, check Prosody logs (`docker logs jitsi-docker-prosody-1`) and the bot console output for auth or JID mismatches; add JWT or adjust domains if required.
+
+## Secret scanning
+
+Before pushing, run `npm run gitleaks` (requires [gitleaks](https://github.com/gitleaks/gitleaks) installed) to detect committed secrets. CI runs the same check and fails the workflow if secrets are detected. Only `.env.example` is committed; never commit `.env.local` or files with real API keys or tokens.
 
 ## Tests
 

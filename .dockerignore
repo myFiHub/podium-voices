@@ -1,0 +1,30 @@
+# Dependencies and build artifacts (rebuilt in image)
+node_modules
+dist
+npm-debug.log*
+
+# Env and secrets – never bake into image
+.env
+.env.*
+!.env.example
+
+# Local and logs
+logs
+*.local
+.git
+.gitignore
+
+# Test and CI
+tests
+jest.config.js
+tsconfig.spec.json
+.coverage
+artifacts
+
+# Docs and planning (optional: remove to shrink image)
+# docs
+# *.md
+
+# WAV and misc (keep assets/fillers for pipeline)
+*.wav
+!assets/**/*.wav

@@ -20,7 +20,8 @@
     "personaplex:down": "node scripts/personaplex-supervisor.js down",
     "stimuli:generate": "node scripts/generate-stimuli.js",
     "whisper-local:smoke": "node scripts/whisper-local-smoke.js",
-    "personaplex:router": "node scripts/personaplex-router.js"
+    "personaplex:router": "node scripts/personaplex-router.js",
+    "gitleaks": "gitleaks detect --no-git --config gitleaks.toml --source . --verbose"
   },
   "engines": {
     "node": ">=18"

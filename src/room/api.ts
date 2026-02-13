@@ -1,9 +1,11 @@
 /**
  * Podium REST API client.
  * Auth: Authorization: Bearer <token>. Base URL from config.
+ * On 401/403 logs AUTH_FAILURE for alerting (see docs/TOKEN_ROTATION_SOP.md).
  */
 
 import type { User, OutpostModel, OutpostLiveData } from "./types";
+import { logger } from "../logging";
 
 export interface PodiumApiConfig {
   baseUrl: string;
@@ -32,6 +34,12 @@ export class PodiumApi {
     const response = await fetch(url, options);
     if (!response.ok) {
       const text = await response.text();
+      if (response.status === 401 || response.status === 403) {
+        logger.warn(
+          { event: "AUTH_FAILURE", source: "api", method, path, status: response.status },
+          "Podium API auth failure – token may be invalid or expired"
+        );
+      }
       throw new Error(`Podium API ${method} ${path}: ${response.status} ${text}`);
     }
     if (response.status === 204) return undefined as T;

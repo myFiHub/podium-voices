@@ -15,15 +15,22 @@ import { logger, logError } from "./logging";
 import { runWatchdogTick } from "./metrics";
 import { MockRoom } from "./room/mock";
 import { RoomClient } from "./room/client";
+import type { User, OutpostModel } from "./room/types";
 import { SpeakingController } from "./room/speaking-controller";
 import { LiveState } from "./room/live-state";
 import { PromptManager } from "./prompts/prompt-manager";
 import { getPersona } from "./prompts/persona";
 import { CoordinatorClient } from "./coordinator/client";
 import { PersonaPlexClient } from "./adapters/personaplex";
+import { startHealthServer } from "./health-server";
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  let roomRef: RoomClient | null = null;
+  let mockRoom: MockRoom | null = null;
+  startHealthServer({
+    getReady: () => (roomRef != null && roomRef.wsConnected()) || mockRoom != null,
+  });
   const validation = validateConfig(config);
   for (const msg of validation.errors) {
     logger.error({ event: "CONFIG_ERROR" }, msg);
@@ -81,8 +88,6 @@ async function main(): Promise<void> {
   let ttsSink: (buffer: Buffer) => void = () => {};
   let speakingController: SpeakingController | null = null;
   let liveState: LiveState | null = null;
-  let roomRef: RoomClient | null = null;
-  let mockRoom: MockRoom | null = null;
   let watchdogInterval: ReturnType<typeof setInterval> | null = null;
   // Debug/diagnostics: track whether synthesized PCM is actually non-silent.
   const ttsEnergyByUtterance = new Map<string, { bytes: number; sampleCount: number; sumSq: number; source?: string }>();
@@ -175,9 +180,28 @@ async function main(): Promise<void> {
     });
     ttsSink = (buf) => room.pushTtsAudio(buf);
     room.onAudioChunk((chunk) => orchestrator.pushAudio(chunk));
-    const joined = await room.join();
+    const JOIN_MAX_MS = 120_000;
+    const joinPromise = room.join();
+    const joinTimeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("JOIN_TIMEOUT_120s")), JOIN_MAX_MS);
+    });
+    let joined: { user: User; outpost: OutpostModel };
+    try {
+      joined = await Promise.race([joinPromise, joinTimeoutPromise]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ event: "JOIN_FAILED", err: message }, "Room join failed or exceeded max duration (120s); exiting");
+      process.exit(1);
+    }
     roomRef = room;
-    logger.info("Joined Podium outpost room");
+    logger.info({ event: "ROOM_JOINED" }, "Joined Podium outpost room");
+
+    const sessionId = `${config.podium.outpostUuid}-${Date.now()}`;
+    orchestrator.setRunningSummaryConfig(
+      sessionId,
+      config.pipeline.runningSummaryTurnInterval ?? 10,
+      config.pipeline.runningSummaryEnabled !== false
+    );
 
     // Configure reaction filtering now that we know the bot's wallet address.
     // FEEDBACK_REACT_TO_ADDRESS behavior:
@@ -207,6 +231,7 @@ async function main(): Promise<void> {
       feedbackCollector.handleWSMessage(msg);
       liveState?.handleWSMessage(msg);
       if (liveState?.isSelfTimeUpEvent(msg)) {
+        logger.info({ event: "USER_TIME_IS_UP" }, "User speaking time is up; muting bot");
         speakingController?.forceMute("user.time_is_up");
       }
     });
@@ -250,6 +275,12 @@ async function main(): Promise<void> {
         );
       }, openerDelayMs);
     }
+    const watchdogExitOnUnhealthy = (process.env.WATCHDOG_EXIT_ON_UNHEALTHY ?? "true").trim().toLowerCase() !== "false";
+    const scheduleExit = (code: number): void => {
+      const delay = 500;
+      logger.warn({ event: "WATCHDOG_EXIT_SCHEDULED", code, delayMs: delay }, "Watchdog triggered exit; flushing logs then exiting");
+      setTimeout(() => process.exit(code), delay);
+    };
     const health = room.getHealthChecks();
     let lastRx = 0;
     let lastTx = 0;
@@ -257,9 +288,18 @@ async function main(): Promise<void> {
       runWatchdogTick(
         { intervalMs: 30000, wsFailCountBeforeRestart: 3, conferenceFailCountBeforeRestart: 3, audioFailCountBeforeRestart: 5 },
         {
-          onWSUnhealthy: () => { logger.warn("Watchdog: WS unhealthy; consider restarting process or reconnecting."); },
-          onConferenceUnhealthy: () => { logger.warn("Watchdog: Conference unhealthy; consider restarting process."); },
-          onAudioUnhealthy: () => { logger.warn("Watchdog: Audio pipeline unhealthy; consider restarting process."); },
+          onWSUnhealthy: () => {
+            logger.warn({ event: "WATCHDOG_WS_UNHEALTHY" }, "Watchdog: WS unhealthy");
+            if (watchdogExitOnUnhealthy) scheduleExit(1);
+          },
+          onConferenceUnhealthy: () => {
+            logger.warn({ event: "WATCHDOG_CONFERENCE_UNHEALTHY" }, "Watchdog: Conference unhealthy");
+            if (watchdogExitOnUnhealthy) scheduleExit(1);
+          },
+          onAudioUnhealthy: () => {
+            logger.warn({ event: "WATCHDOG_AUDIO_UNHEALTHY" }, "Watchdog: Audio pipeline unhealthy");
+            if (watchdogExitOnUnhealthy) scheduleExit(1);
+          },
         },
         {
           ws: () => health.wsConnected(),

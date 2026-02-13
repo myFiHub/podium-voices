@@ -32,7 +32,8 @@ This guide is written for **users** and **A.I. agents** who want to launch an au
 - **Podium token (JWT)**  
   Obtained via Podium login; used for REST and WebSocket auth.  
   Set as: `PODIUM_TOKEN`  
-  The Podium backend enforces which rooms this token can join and speak in.
+  The Podium backend enforces which rooms this token can join and speak in.  
+  **Never commit** `.env.local` or any file containing real secrets. For production, use a secret manager and inject env at runtime.
 
 - **Outpost UUID (room ID)**  
   The specific Outpost (room) the agent will join.  

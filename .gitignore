@@ -1,5 +1,12 @@
 node_modules
+/logs
+
+# Env files with secrets – only .env.example is committed (template only).
+.env
 .env.local
 .env.multi-agent
+.env.*.local
 *.local
-/logs
+
+# Session persistence (running summary)
+/data

@@ -1,0 +1,47 @@
+# Podium Voices: one agent + optional Turn Coordinator.
+# Inject PODIUM_TOKEN via secret manager or env at runtime; never bake into image.
+# See README and docs/TOKEN_ROTATION_SOP.md.
+
+services:
+  podium-voices-agent:
+    build: .
+    image: podium-voices:latest
+    command: ["node", "dist/main.js"]
+    restart: unless-stopped
+    # Env from host or a mounted env file; do not commit real secrets.
+    # Required: PODIUM_TOKEN (or PODIUM_TOKEN_FILE), PODIUM_OUTPOST_UUID,
+    #   NEXT_PUBLIC_PODIUM_API_URL, NEXT_PUBLIC_WEBSOCKET_ADDRESS, ASR/LLM/TTS keys.
+    # Optional: AGENT_ID, AGENT_DISPLAY_NAME, COORDINATOR_URL, PERSONA_ID,
+    #   JITSI_XMPP_DOMAIN, JITSI_MUC_DOMAIN, USE_JITSI_BOT, etc.
+    environment:
+      - PODIUM_TOKEN
+      - PODIUM_TOKEN_FILE
+      - PODIUM_OUTPOST_UUID
+      - NEXT_PUBLIC_PODIUM_API_URL
+      - NEXT_PUBLIC_WEBSOCKET_ADDRESS
+      - OPENAI_API_KEY
+      - OPENAI_MODEL_NAME
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_MODEL_NAME
+      - Google_Cloud_TTS_API_KEY
+      - USE_JITSI_BOT
+      - COORDINATOR_URL
+      - AGENT_ID
+      - AGENT_DISPLAY_NAME
+      - PERSONA_ID
+      - JITSI_XMPP_DOMAIN
+      - JITSI_MUC_DOMAIN
+      - LOG_LEVEL
+      - HEALTH_PORT
+
+  turn-coordinator:
+    image: podium-voices:latest
+    command: ["node", "dist/coordinator/index.js"]
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - COORDINATOR_PORT=3001
+      - COORDINATOR_AGENTS
+      - COORDINATOR_COLLECTION_MS
+      - COORDINATOR_LEASE_MS

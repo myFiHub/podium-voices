@@ -2,6 +2,7 @@
  * High-level Podium room client: runs host join flow and exposes audio in/out.
  * Uses REST (api), WebSocket (ws), and Jitsi (jitsi) to join as host; then provides
  * incoming audio stream for the pipeline and a method to push TTS output.
+ * Implements WS reconnect with exponential backoff + jitter; Jitsi start with retry.
  */
 import type { User, OutpostModel, OutpostLiveData, WSInMessage } from "./types";
 export interface RoomClientConfig {
@@ -35,7 +36,12 @@ export declare class RoomClient {
     private outpost;
     private readonly config;
     private callbacks;
+    private reconnectAttempts;
+    private reconnectTimer;
+    private isLeaving;
     constructor(config: RoomClientConfig);
+    private scheduleReconnect;
+    private doReconnect;
     onAudioChunk(cb: (buffer: Buffer) => void): void;
     /** Subscribe to raw Podium WS messages (reactions, speaking-time events, etc.). */
     onWSMessage(cb: (msg: WSInMessage) => void): void;

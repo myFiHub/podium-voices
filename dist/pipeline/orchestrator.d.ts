@@ -45,6 +45,12 @@ export interface OrchestratorConfig {
     personaId?: string;
     /** When set, TTS uses this cadence profile (personas/*.json) for rate/pitch. Typically same as personaId for cadence personas. */
     cadenceProfileId?: string;
+    /** Session id for running-summary persistence (set after join, e.g. outpostUuid + start time). */
+    sessionId?: string;
+    /** Run running summary every N assistant turns (default 10). */
+    runningSummaryTurnInterval?: number;
+    /** Enable running summary and persistence (default true). */
+    runningSummaryEnabled?: boolean;
 }
 export declare class Orchestrator {
     private readonly asr;
@@ -80,7 +86,17 @@ export declare class Orchestrator {
     private readonly cadenceProfileId?;
     /** Set when main TTS starts so filler playback aborts. */
     private fillerAbort;
+    /** Session id for running-summary persistence; set from main after join. */
+    private sessionId;
+    private runningSummaryTurnInterval;
+    private runningSummaryEnabled;
+    /** Count of assistant turns (for running summary every N turns). */
+    private assistantTurnCount;
     constructor(asr: IASR, llm: ILLM, tts: ITTS, memory: ISessionMemory, config: OrchestratorConfig, callbacks?: PipelineCallbacks);
+    /** Set session id and running-summary config (call from main after room join). */
+    setRunningSummaryConfig(sessionId: string, interval: number, enabled: boolean): void;
+    /** After each assistant reply turn: increment count and optionally run running summary (async, non-blocking). */
+    private maybeScheduleRunningSummary;
     /** Voice options for TTS: sample rate, rate/pitch, and optional voice name from cadence profile when set. */
     private getVoiceOptionsForTts;
     /** Capture barge-in stop latency (ms) and clear; call when recording turn metrics. */

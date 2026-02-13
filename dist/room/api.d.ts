@@ -1,6 +1,7 @@
 /**
  * Podium REST API client.
  * Auth: Authorization: Bearer <token>. Base URL from config.
+ * On 401/403 logs AUTH_FAILURE for alerting (see docs/TOKEN_ROTATION_SOP.md).
  */
 import type { User, OutpostModel, OutpostLiveData } from "./types";
 export interface PodiumApiConfig {

@@ -21,9 +21,19 @@ import { logger } from "../logging";
 import { flushSentences, DEFAULT_MAX_CHARS_PER_CHUNK } from "./sentence-splitter";
 import { chooseFiller, streamFillerClip } from "./fillerEngine";
 import type { FillerEngineConfig } from "./fillerEngine";
+import { updateRunningSummary } from "../memory/running-summary";
 
 const DEFAULT_ASR_TIMEOUT_MS = 20_000;
 const DEFAULT_LLM_TIMEOUT_MS = 25_000;
+
+/** Reply max tokens by feedback behavior: high_negative gets a lower cap for short, reset-style replies. */
+const REPLY_MAX_TOKENS_HIGH_NEGATIVE = 80;
+const REPLY_MAX_TOKENS_DEFAULT = 150;
+
+function getReplyMaxTokens(behaviorLevel: "high_positive" | "positive" | "neutral" | "negative" | "high_negative"): number {
+  if (behaviorLevel === "high_negative") return REPLY_MAX_TOKENS_HIGH_NEGATIVE;
+  return REPLY_MAX_TOKENS_DEFAULT;
+}
 
 function withTimeout<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -62,6 +72,12 @@ export interface OrchestratorConfig {
   personaId?: string;
   /** When set, TTS uses this cadence profile (personas/*.json) for rate/pitch. Typically same as personaId for cadence personas. */
   cadenceProfileId?: string;
+  /** Session id for running-summary persistence (set after join, e.g. outpostUuid + start time). */
+  sessionId?: string;
+  /** Run running summary every N assistant turns (default 10). */
+  runningSummaryTurnInterval?: number;
+  /** Enable running summary and persistence (default true). */
+  runningSummaryEnabled?: boolean;
 }
 
 export class Orchestrator {
@@ -92,6 +108,12 @@ export class Orchestrator {
   private readonly cadenceProfileId?: string;
   /** Set when main TTS starts so filler playback aborts. */
   private fillerAbort = false;
+  /** Session id for running-summary persistence; set from main after join. */
+  private sessionId: string | undefined = undefined;
+  private runningSummaryTurnInterval = 10;
+  private runningSummaryEnabled = true;
+  /** Count of assistant turns (for running summary every N turns). */
+  private assistantTurnCount = 0;
 
   constructor(
     private readonly asr: IASR,
@@ -121,6 +143,33 @@ export class Orchestrator {
     this.fillerConfig = config.fillerConfig;
     this.personaId = config.personaId ?? "default";
     this.cadenceProfileId = config.cadenceProfileId;
+    this.sessionId = config.sessionId;
+    this.runningSummaryTurnInterval = config.runningSummaryTurnInterval ?? 10;
+    this.runningSummaryEnabled = config.runningSummaryEnabled !== false;
+  }
+
+  /** Set session id and running-summary config (call from main after room join). */
+  setRunningSummaryConfig(sessionId: string, interval: number, enabled: boolean): void {
+    this.sessionId = sessionId;
+    this.runningSummaryTurnInterval = interval;
+    this.runningSummaryEnabled = enabled;
+  }
+
+  /** After each assistant reply turn: increment count and optionally run running summary (async, non-blocking). */
+  private maybeScheduleRunningSummary(): void {
+    this.assistantTurnCount++;
+    if (
+      !this.runningSummaryEnabled ||
+      !this.sessionId ||
+      this.runningSummaryTurnInterval <= 0 ||
+      this.assistantTurnCount % this.runningSummaryTurnInterval !== 0
+    ) {
+      return;
+    }
+    const memoryWithSummary = this.memory as ISessionMemory & { setRunningSummary(s: string | undefined): void };
+    void updateRunningSummary(memoryWithSummary, this.llm, this.sessionId).catch((err) =>
+      logger.warn({ event: "RUNNING_SUMMARY_SCHEDULE_FAILED", err: (err as Error).message }, "Running summary schedule failed")
+    );
   }
 
   /** Voice options for TTS: sample rate, rate/pitch, and optional voice name from cadence profile when set. */
@@ -415,6 +464,7 @@ export class Orchestrator {
         ppAssistantMessage = assistantSafe.text;
         this.memory.append("assistant", assistantSafe.text);
         this.callbacks.onAgentReply?.(assistantSafe.text);
+        this.maybeScheduleRunningSummary();
       }
     } catch (err) {
       // Absorb turn.text rejection so it does not become an unhandled rejection and crash the process.
@@ -449,6 +499,9 @@ export class Orchestrator {
       endOfUserSpeechToBotAudioMs,
       bargeInStopLatencyMs: this.captureBargeInLatency(),
       turnId: coordinatorTurnId,
+      personaId: this.personaId,
+      feedbackLevel: this.getFeedbackBehaviorLevel(),
+      responseTokens: ppAssistantMessage.length > 0 ? Math.ceil(ppAssistantMessage.length / 4) : undefined,
     });
 
     await this.maybeRunPendingTurn();
@@ -519,7 +572,8 @@ export class Orchestrator {
     let fullText = "";
     let llmLatencyMs = 0;
     try {
-      const llmResponse = await withTimeout(this.llm.chat(messages, { stream: true, maxTokens: 150 }), this.timeouts.llmMs, "LLM");
+      const maxTokens = getReplyMaxTokens(feedbackBehaviorLevel);
+      const llmResponse = await withTimeout(this.llm.chat(messages, { stream: true, maxTokens }), this.timeouts.llmMs, "LLM");
       fullText = llmResponse.text;
       const stream = llmResponse.stream;
       // Allow barge-in during LLM consumption and TTS; first audio can start as soon as first sentence is ready.
@@ -570,6 +624,9 @@ export class Orchestrator {
               bargeInStopLatencyMs: this.captureBargeInLatency(),
               turnId: coordinatorTurnId,
               winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
+              personaId: this.personaId,
+              feedbackLevel: this.getFeedbackBehaviorLevel(),
+              responseTokens: fullText.length > 0 ? Math.ceil(fullText.length / 4) : undefined,
             });
             await this.maybeRunPendingTurn();
             return;
@@ -615,6 +672,8 @@ export class Orchestrator {
             bargeInStopLatencyMs: this.captureBargeInLatency(),
             turnId: coordinatorTurnId,
             winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
+            personaId: this.personaId,
+            feedbackLevel: this.getFeedbackBehaviorLevel(),
           });
           await this.maybeRunPendingTurn();
           return;
@@ -622,6 +681,7 @@ export class Orchestrator {
         assistantMessageForCoordinator = assistantSafe.text;
         this.memory.append("assistant", assistantSafe.text);
         this.callbacks.onAgentReply?.(assistantSafe.text);
+        this.maybeScheduleRunningSummary();
         const endOfUserSpeechToBotAudioMs = firstTtsChunkAt !== undefined ? firstTtsChunkAt - turnStart : undefined;
         recordTurnMetrics({
           asrLatencyMs,
@@ -631,6 +691,9 @@ export class Orchestrator {
           bargeInStopLatencyMs: this.captureBargeInLatency(),
           turnId: coordinatorTurnId,
           winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
+          personaId: this.personaId,
+          feedbackLevel: this.getFeedbackBehaviorLevel(),
+          responseTokens: assistantSafe.text.length > 0 ? Math.ceil(assistantSafe.text.length / 4) : undefined,
         });
         await this.maybeRunPendingTurn();
         return;
@@ -645,6 +708,7 @@ export class Orchestrator {
     assistantMessageForCoordinator = assistantSafe.text;
     this.memory.append("assistant", assistantSafe.text);
     this.callbacks.onAgentReply?.(assistantSafe.text);
+    this.maybeScheduleRunningSummary();
     this.processing = false;
     this.speaking = true;
     this.cancelTts = false;
@@ -652,6 +716,11 @@ export class Orchestrator {
     let firstTtsChunkAt: number | undefined;
     let ttsStarted = false;
     const utteranceId = `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const turnMetricsPayload = {
+      personaId: this.personaId,
+      feedbackLevel: this.getFeedbackBehaviorLevel(),
+      responseTokens: assistantSafe.text.length > 0 ? Math.ceil(assistantSafe.text.length / 4) : undefined,
+    };
     try {
       const ttsResult = this.tts.synthesize(assistantSafe.text.trim(), this.getVoiceOptionsForTts());
       for await (const buf of ttsToStream(ttsResult)) {
@@ -682,6 +751,7 @@ export class Orchestrator {
       bargeInStopLatencyMs: this.captureBargeInLatency(),
       turnId: coordinatorTurnId,
       winnerSelectionReason: winnerSelectionReason as "name_addressing" | "round_robin" | "auction" | undefined,
+      ...turnMetricsPayload,
     });
     await this.maybeRunPendingTurn();
     } finally {

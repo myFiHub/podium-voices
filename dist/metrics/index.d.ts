@@ -21,6 +21,12 @@ export interface TurnMetrics {
     turnId?: string;
     /** Request ID for correlation. */
     requestId?: string;
+    /** Persona ID for this turn (e.g. default, hype). */
+    personaId?: string;
+    /** Feedback behavior level at turn start (e.g. high_negative, neutral). */
+    feedbackLevel?: string;
+    /** Approximate response token count (e.g. from reply length). */
+    responseTokens?: number;
 }
 /** Audio bridge / bot stats (from browser or Node). */
 export interface AudioMetrics {

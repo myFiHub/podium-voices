@@ -1,0 +1,23 @@
+# Gitleaks config for Podium Voices.
+# Run: gitleaks detect --no-git (or gitleaks protect for pre-commit).
+# CI runs this and fails the workflow if secrets are detected.
+# See: https://github.com/gitleaks/gitleaks
+
+title = "podium-voices"
+
+[extend]
+useDefault = true
+
+# Only .env.example is committed; it may contain placeholder key names but no real secrets.
+# Allowlist so we do not flag the template. Real secrets must never be in committed files.
+[allowlist]
+description = "Template and example files; do not commit real secrets"
+paths = [
+  '''\.env\.example$''',
+  '''\.env\.sample$''',
+  '''gitleaks\.toml$''',
+]
+regexes = [
+  '''^$''',
+  '''^#.*$''',
+]

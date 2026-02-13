@@ -25,6 +25,9 @@ function recordTurnMetrics(metrics) {
         barge_in_stop_latency_ms: metrics.bargeInStopLatencyMs,
         turn_id: metrics.turnId,
         request_id: metrics.requestId,
+        persona_id: metrics.personaId,
+        feedback_level: metrics.feedbackLevel,
+        response_tokens: metrics.responseTokens,
     }, "Turn latency");
 }
 function recordAudioMetrics(metrics) {

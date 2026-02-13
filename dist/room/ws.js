@@ -25,8 +25,13 @@ class PodiumWS {
     ws = null;
     config;
     handlers = [];
+    onDisconnectedCb = null;
     constructor(config) {
         this.config = config;
+    }
+    /** Set callback to be invoked when the WebSocket disconnects (close or error). */
+    setOnDisconnected(cb) {
+        this.onDisconnectedCb = cb;
     }
     onMessage(handler) {
         this.handlers.push(handler);
@@ -41,15 +46,39 @@ class PodiumWS {
         const urlForLog = `${this.config.wsAddress}?token=${token ? "[REDACTED]" : "[MISSING]"}&timezone=${encodeURIComponent(tz)}`;
         logging_1.logger.debug({ event: "WS_CONNECT", url: urlForLog, hasToken: !!token, timezone: tz }, "WebSocket connecting (auth in URL)");
         return new Promise((resolve, reject) => {
-            this.ws = new ws_1.default(url);
-            this.ws.on("open", () => resolve());
-            this.ws.on("error", reject);
-            this.ws.on("message", (data) => {
+            const ws = new ws_1.default(url);
+            this.ws = ws;
+            const triggerDisconnected = () => {
+                this.ws = null;
+                this.onDisconnectedCb?.();
+            };
+            ws.on("open", () => {
+                ws.on("close", (code, reason) => {
+                    logging_1.logger.warn({ event: "WS_CLOSED", code, reason: reason?.toString() }, "WebSocket closed");
+                    triggerDisconnected();
+                });
+                ws.on("error", (err) => {
+                    logging_1.logger.warn({ event: "WS_ERROR_EVENT", err: err.message }, "WebSocket error");
+                    triggerDisconnected();
+                });
+                resolve();
+            });
+            ws.on("error", (err) => {
+                if (this.ws === ws)
+                    this.ws = null;
+                reject(err);
+            });
+            ws.on("message", (data) => {
                 try {
                     const msg = JSON.parse(data.toString());
                     if (msg.name === "error") {
                         const errMsg = msg.data?.message;
+                        const code = msg.data?.code;
                         logging_1.logger.warn({ event: "WS_ERROR", message: errMsg, data: msg.data }, "WebSocket server error");
+                        const authLike = [401, 403, "401", "403"].includes(code) || /unauthorized|forbidden|token|auth|invalid.*token/i.test(String(errMsg ?? ""));
+                        if (authLike) {
+                            logging_1.logger.warn({ event: "AUTH_FAILURE", source: "ws", message: errMsg, code }, "WebSocket auth failure – token may be invalid or expired");
+                        }
                     }
                     logging_1.logger.debug({ event: "WS_MESSAGE", name: msg.name, data: msg.data }, "WebSocket message");
                     this.handlers.forEach((h) => h(msg));
@@ -59,6 +88,14 @@ class PodiumWS {
                 }
             });
         });
+    }
+    /** Disconnect and clear socket (e.g. before reconnect). */
+    disconnect() {
+        if (this.ws) {
+            this.ws.removeAllListeners();
+            this.ws.close();
+            this.ws = null;
+        }
     }
     send(msg) {
         if (!this.ws || this.ws.readyState !== ws_1.default.OPEN) {

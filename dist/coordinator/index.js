@@ -310,6 +310,10 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, { ok: true });
         return;
     }
+    if (method === "GET" && (url === "/health" || url === "/")) {
+        sendJson(res, 200, { ok: true });
+        return;
+    }
     res.writeHead(404);
     res.end();
 });
