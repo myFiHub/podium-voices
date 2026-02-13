@@ -1,9 +1,18 @@
 /**
  * Optional launcher: start Turn Coordinator then N agent processes for Phase 1 multi-agent.
  * Usage: node scripts/run-multi-agent.js [configPath]
- * Config JSON (optional): { "coordinatorPort": 3001, "agents": [ { "agentId": "alex", "displayName": "Alex", "personaId": "default" }, ... ] }
- * If no config path, uses COORDINATOR_PORT (default 3001) and COORDINATOR_AGENTS env (e.g. alex:Alex,jamie:Jamie) to build two agents.
- * Each agent inherits process.env (PODIUM_TOKEN, etc.); override with COORDINATOR_URL (e.g. http://localhost:3001).
+ *
+ * Supported env for "single source of truth" multi-agent launch:
+ * - PODIUM_TOKENS=token1,token2,... (preferred), or PODIUM_TOKEN_1/PODIUM_TOKEN_2/... (alternative)
+ * - AGENT_IDS=alex,jamie
+ * - AGENT_DISPLAY_NAMES=Alex,Jamie
+ * - AGENT_PERSONAS=default,hype
+ * - PODIUM_OUTPOST_UUIDS=uuid1,uuid2 (optional; fallback to shared PODIUM_OUTPOST_UUID)
+ * - HEALTH_PORT_BASE=8080 (auto-assigns HEALTH_PORT per agent: base + index)
+ *
+ * Backward compatible with:
+ * - COORDINATOR_AGENTS=alex:Alex,jamie:Jamie
+ * - Single PODIUM_TOKEN/PODIUM_OUTPOST_UUID inherited by all agents.
  */
 
 const { spawn } = require("child_process");
@@ -48,6 +57,50 @@ let config = {
   agents: [],
 };
 
+function parseCsv(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parseNumberedEnv(prefix) {
+  const matches = Object.keys(process.env)
+    .filter((k) => k.startsWith(`${prefix}_`))
+    .map((k) => {
+      const idxRaw = k.slice(prefix.length + 1);
+      const idx = parseInt(idxRaw, 10);
+      if (Number.isNaN(idx)) return null;
+      const value = (process.env[k] || "").trim();
+      return { idx, value };
+    })
+    .filter((x) => x && x.value);
+  matches.sort((a, b) => a.idx - b.idx);
+  return matches.map((m) => m.value);
+}
+
+function inferAgentsFromLists() {
+  const ids = parseCsv(process.env.AGENT_IDS);
+  const displayNames = parseCsv(process.env.AGENT_DISPLAY_NAMES);
+  const personas = parseCsv(process.env.AGENT_PERSONAS);
+  const tokens = parseCsv(process.env.PODIUM_TOKENS);
+  const numberedTokens = parseNumberedEnv("PODIUM_TOKEN");
+
+  const count = Math.max(ids.length, displayNames.length, personas.length, tokens.length, numberedTokens.length);
+  if (count === 0) return [];
+
+  const agents = [];
+  for (let i = 0; i < count; i++) {
+    const fallbackId = `agent${i + 1}`;
+    const id = ids[i] || fallbackId;
+    const displayName = displayNames[i] || id;
+    const personaId = personas[i] || (i === 0 ? "default" : "hype");
+    agents.push({ agentId: id, displayName, personaId });
+  }
+  return agents;
+}
+
 const configPath = process.argv[2];
 if (configPath && fs.existsSync(configPath)) {
   try {
@@ -58,6 +111,11 @@ if (configPath && fs.existsSync(configPath)) {
     console.error("Failed to load config:", e.message);
     process.exit(1);
   }
+}
+
+if (config.agents.length === 0) {
+  const inferred = inferAgentsFromLists();
+  if (inferred.length > 0) config.agents = inferred;
 }
 
 if (config.agents.length === 0 && process.env.COORDINATOR_AGENTS) {
@@ -76,6 +134,17 @@ if (config.agents.length === 0) {
 }
 
 const coordinatorUrl = `http://localhost:${config.coordinatorPort}`;
+const tokenList = (() => {
+  const fromCsv = parseCsv(process.env.PODIUM_TOKENS);
+  if (fromCsv.length > 0) return fromCsv;
+  return parseNumberedEnv("PODIUM_TOKEN");
+})();
+const outpostList = (() => {
+  const fromCsv = parseCsv(process.env.PODIUM_OUTPOST_UUIDS);
+  if (fromCsv.length > 0) return fromCsv;
+  return parseNumberedEnv("PODIUM_OUTPOST_UUID");
+})();
+const personaList = parseCsv(process.env.AGENT_PERSONAS);
 
 const coord = spawn(process.execPath, [coordinatorPath], {
   cwd: projectRoot,
@@ -102,18 +171,49 @@ setTimeout(() => {
     if (!Number.isNaN(n) && n >= 0) return n;
     return 8766;
   })();
+  const healthPortBase = (() => {
+    const raw = process.env.HEALTH_PORT_BASE || process.env.HEALTH_PORT;
+    const n = raw != null && raw !== "" ? parseInt(raw, 10) : NaN;
+    if (!Number.isNaN(n) && n >= 0) return n;
+    return 8080;
+  })();
   const perAgentPorts = {};
+  const perAgentHealthPorts = {};
+
+  if (tokenList.length > 0 && tokenList.length < config.agents.length) {
+    console.warn(
+      `Warning: only ${tokenList.length} token(s) provided for ${config.agents.length} agents. Remaining agents will reuse PODIUM_TOKEN if set.`
+    );
+  }
 
   for (const agent of config.agents) {
     const idx = children.length;
     const assignedPort = basePort === 0 ? 0 : (basePort + idx);
+    const assignedHealthPort = healthPortBase + idx;
+    const assignedToken = tokenList[idx] || process.env.PODIUM_TOKEN;
+    const assignedOutpostUuid = outpostList[idx] || process.env.PODIUM_OUTPOST_UUID;
+    const assignedPersonaId = personaList[idx] || agent.personaId || "default";
+
+    if (!assignedToken) {
+      console.error(`Agent ${agent.agentId}: missing token. Set PODIUM_TOKENS/PODIUM_TOKEN_# or PODIUM_TOKEN.`);
+      process.exit(1);
+    }
+    if (!assignedOutpostUuid) {
+      console.error(`Agent ${agent.agentId}: missing outpost UUID. Set PODIUM_OUTPOST_UUIDS/PODIUM_OUTPOST_UUID_# or PODIUM_OUTPOST_UUID.`);
+      process.exit(1);
+    }
+
     perAgentPorts[agent.agentId] = assignedPort;
+    perAgentHealthPorts[agent.agentId] = assignedHealthPort;
     const env = {
       ...process.env,
       COORDINATOR_URL: coordinatorUrl,
       AGENT_ID: agent.agentId,
       AGENT_DISPLAY_NAME: agent.displayName,
-      PERSONA_ID: agent.personaId || "default",
+      PERSONA_ID: assignedPersonaId,
+      PODIUM_TOKEN: assignedToken,
+      PODIUM_OUTPOST_UUID: assignedOutpostUuid,
+      HEALTH_PORT: String(assignedHealthPort),
       // Deterministic bridge port per agent to avoid collisions.
       JITSI_BRIDGE_PORT: String(assignedPort),
     };
@@ -125,6 +225,7 @@ setTimeout(() => {
   }
 
   console.log("Multi-agent: bridge ports assigned:", perAgentPorts);
+  console.log("Multi-agent: health ports assigned:", perAgentHealthPorts);
 
   process.on("SIGINT", () => {
     children.forEach((c) => c.kill("SIGINT"));

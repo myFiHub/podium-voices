@@ -93,11 +93,42 @@ Start both services (agent + coordinator):
 docker compose --env-file .env.local up -d
 ```
 
+### Multi-agent launcher (single env file)
+
+To launch multiple agents from one env file, use the multi-agent profile and service:
+
+```bash
+docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent
+```
+
+Recommended env pattern in `.env.local`:
+
+```bash
+PODIUM_TOKENS=<token_1>,<token_2>
+AGENT_IDS=alex,jamie
+AGENT_DISPLAY_NAMES=Alex,Jamie
+AGENT_PERSONAS=default,hype
+# Optional when each agent joins a different room:
+# PODIUM_OUTPOST_UUIDS=<uuid_1>,<uuid_2>
+```
+
+Alternative numbered-token pattern:
+
+```bash
+PODIUM_TOKEN_1=<token_1>
+PODIUM_TOKEN_2=<token_2>
+AGENT_IDS=alex,jamie
+AGENT_DISPLAY_NAMES=Alex,Jamie
+```
+
+`podium-voices-multi-agent` runs one internal coordinator plus one agent process per token.
+
 View logs:
 
 ```bash
 docker compose logs -f podium-voices-agent
 docker compose logs -f turn-coordinator
+docker compose logs -f podium-voices-multi-agent
 ```
 
 Stop:
@@ -114,5 +145,6 @@ docker compose down
 |-------------------------|----------------------------------|--------------------------------------------|
 | `podium-voices-agent`   | `node dist/main.js`              | Main agent. Restart: `unless-stopped`.     |
 | `turn-coordinator`      | `node dist/coordinator/index.js` | Exposes port 3001. Restart: `unless-stopped`. |
+| `podium-voices-multi-agent` | `node scripts/run-multi-agent.js` | Profile `multi-agent`; starts internal coordinator + N agents from one env file. |
 
 For multi-agent, run multiple agent containers with different `AGENT_ID`, `AGENT_DISPLAY_NAME`, and (if needed) `PODIUM_TOKEN`, or scale and pass per-instance env (e.g. via Compose profiles or a separate stack).

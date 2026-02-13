@@ -20,6 +20,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
+COPY scripts ./scripts
+COPY bot-page ./bot-page
 
 # Chromium + system deps (see https://playwright.dev/docs/docker)
 RUN npx playwright install chromium --with-deps

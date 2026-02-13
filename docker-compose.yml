@@ -34,6 +34,49 @@ services:
       - LOG_LEVEL
       - HEALTH_PORT
 
+  # Optional single-container multi-agent launcher:
+  # starts one internal coordinator + N agent processes using one env file.
+  # Enable with: docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent
+  podium-voices-multi-agent:
+    build: .
+    image: podium-voices:latest
+    command: ["node", "scripts/run-multi-agent.js"]
+    restart: unless-stopped
+    profiles: ["multi-agent"]
+    environment:
+      - COORDINATOR_PORT
+      - COORDINATOR_AGENTS
+      - COORDINATOR_COLLECTION_MS
+      - COORDINATOR_LEASE_MS
+      - COORDINATOR_USE_AUCTION
+      - PODIUM_TOKEN
+      - PODIUM_TOKENS
+      - PODIUM_TOKEN_1
+      - PODIUM_TOKEN_2
+      - PODIUM_TOKEN_3
+      - PODIUM_TOKEN_4
+      - PODIUM_OUTPOST_UUID
+      - PODIUM_OUTPOST_UUIDS
+      - PODIUM_OUTPOST_UUID_1
+      - PODIUM_OUTPOST_UUID_2
+      - PODIUM_OUTPOST_UUID_3
+      - PODIUM_OUTPOST_UUID_4
+      - AGENT_IDS
+      - AGENT_DISPLAY_NAMES
+      - AGENT_PERSONAS
+      - NEXT_PUBLIC_PODIUM_API_URL
+      - NEXT_PUBLIC_WEBSOCKET_ADDRESS
+      - OPENAI_API_KEY
+      - OPENAI_MODEL_NAME
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_MODEL_NAME
+      - Google_Cloud_TTS_API_KEY
+      - USE_JITSI_BOT
+      - JITSI_XMPP_DOMAIN
+      - JITSI_MUC_DOMAIN
+      - LOG_LEVEL
+      - HEALTH_PORT_BASE
+
   turn-coordinator:
     image: podium-voices:latest
     command: ["node", "dist/coordinator/index.js"]

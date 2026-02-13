@@ -100,13 +100,19 @@ Use the same `PODIUM_OUTPOST_UUID` and Podium URLs for both; only backend-relate
 
 ## Optional: Launcher Script
 
-To start the coordinator and all agents from one command (e.g. for local dev):
+To start the coordinator and all agents from one command (e.g. for local dev), you can now provide per-agent tokens in one env source:
 
 ```bash
-COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run run-multi-agent
+PODIUM_TOKENS="<token_1>,<token_2>" AGENT_IDS=alex,jamie AGENT_DISPLAY_NAMES=Alex,Jamie AGENT_PERSONAS=default,hype npm run run-multi-agent
 ```
 
-This starts the coordinator, then spawns one agent process per entry in `COORDINATOR_AGENTS` (or from a JSON config file; see [scripts/run-multi-agent.js](../scripts/run-multi-agent.js)). Each agent inherits your current env (e.g. `PODIUM_TOKEN`, `PODIUM_OUTPOST_UUID`, `CONVERSATION_BACKEND`); the script overrides only `COORDINATOR_URL`, `AGENT_ID`, `AGENT_DISPLAY_NAME`, and `PERSONA_ID` per agent. **All agents therefore use the same conversation backend.** For mix-and-match (e.g. one agent PersonaPlex, one ASR/LLM/TTS), start agents manually in separate terminals instead.
+Alternative token format:
+
+```bash
+PODIUM_TOKEN_1="<token_1>" PODIUM_TOKEN_2="<token_2>" AGENT_IDS=alex,jamie AGENT_DISPLAY_NAMES=Alex,Jamie npm run run-multi-agent
+```
+
+The launcher starts one coordinator and one agent process per token/index (see [scripts/run-multi-agent.js](../scripts/run-multi-agent.js)). It auto-sets `COORDINATOR_URL`, per-agent `AGENT_ID`/`AGENT_DISPLAY_NAME`/`PERSONA_ID`, and per-agent bridge/health ports. Use `PODIUM_OUTPOST_UUID` for a shared room, or `PODIUM_OUTPOST_UUIDS=uuid1,uuid2` for per-agent rooms. **All agents launched this way still share the same conversation backend config unless you split runs manually.** For mix-and-match backends (e.g. one agent PersonaPlex, one ASR/LLM/TTS), start agents manually in separate terminals instead.
 
 ---
 

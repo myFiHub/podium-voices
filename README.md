@@ -185,9 +185,13 @@ Use this when **all agents** use the standard pipeline (VAD → ASR → LLM → 
 
 **Optional launcher (single env for all agents):**
 ```bash
-COORDINATOR_AGENTS=alex:Alex,jamie:Jamie npm run run-multi-agent
+# Preferred: one env var containing all tokens
+PODIUM_TOKENS="<token_1>,<token_2>" AGENT_IDS=alex,jamie AGENT_DISPLAY_NAMES=Alex,Jamie AGENT_PERSONAS=default,hype npm run run-multi-agent
+
+# Alternative: numbered env vars
+PODIUM_TOKEN_1="<token_1>" PODIUM_TOKEN_2="<token_2>" AGENT_IDS=alex,jamie AGENT_DISPLAY_NAMES=Alex,Jamie npm run run-multi-agent
 ```
-See [scripts/run-multi-agent.js](scripts/run-multi-agent.js). A second `PODIUM_TOKEN` for the second agent may be required via config or env.
+The launcher starts one coordinator + N agents in one command, auto-assigns per-agent bridge ports and health ports, and maps token index to agent index. See [scripts/run-multi-agent.js](scripts/run-multi-agent.js).
 
 **Behavior**
 
