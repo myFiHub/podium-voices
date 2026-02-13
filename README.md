@@ -28,6 +28,16 @@ You choose **how each agent produces spoken replies**: the **standard pipeline**
 
 See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost%20Rooms.md), [Checklist and Setup Guide for AI Co-Host.md](Checklist%20and%20Setup%20Guide%20for%20AI%20Co-Host.md), and [podium interface considerations.md](podium%20interface%20considerations.md) for design and Podium interface details. **[docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md)** is the main guide for anyone (user or A.I. agent) connecting an audio AI to Podium; **[docs/CONTROLLER_SECURITY_AND_DESIGN.md](docs/CONTROLLER_SECURITY_AND_DESIGN.md)** covers security and design concerns for the Podium controller. **[IMPLEMENTATION.md](IMPLEMENTATION.md)** documents the actual implementation: architecture, core abstractions, pipeline behavior, host join flow, browser bot, audio bridge protocol, config, and how to extend or swap components. **[docs/AGENT_MUTING_AND_SPEAKING_TIME.md](docs/AGENT_MUTING_AND_SPEAKING_TIME.md)** describes what the agent needs for Podium muting/unmuting (start_speaking / stop_speaking) and speaking time (remaining_time, user.time_is_up), aligned with the Nexus frontend; it includes an implementation-status section for this repo.
 
+**Documentation map (for operators and A.I. agents):**
+
+| Doc | Purpose |
+|-----|--------|
+| [docs/DOCKER.md](docs/DOCKER.md) | Docker build, run, env, **multi-agent commands**, stop/restart, **troubleshooting** (missing scripts/bot-page, watchdog). |
+| [docs/MULTI_AGENT_PHASE1.md](docs/MULTI_AGENT_PHASE1.md) | Multi-agent setup: env vars, **Docker (recommended)** vs manual coordinator + terminals, checklist. |
+| [docs/LIVE_RUNBOOK.md](docs/LIVE_RUNBOOK.md) | Live session: before/during/after, **Docker start and restart** commands. |
+| [docs/MVP_DEFINITION_OF_DONE.md](docs/MVP_DEFINITION_OF_DONE.md) | MVP launch criteria and preflight checklist. |
+| [.env.example](.env.example) | All env variables; multi-agent section documents `PODIUM_TOKENS`, `AGENT_IDS`, `AGENT_DISPLAY_NAMES`. |
+
 ## Setup
 
 1. **Clone and install**
@@ -69,16 +79,40 @@ See [AI Agents for Podium Outpost Rooms.md](AI%20Agents%20for%20Podium%20Outpost
 
 4. **Production (Docker)**
 
-   For production, run the agent (and optional Turn Coordinator) with Docker Compose. The image is built with a multi-stage Dockerfile (TypeScript compiles in a builder stage; the final image contains only production dependencies and the built `dist/`).
+   Run the agent (and optional Turn Coordinator) with Docker Compose. The image is built with a **multi-stage Dockerfile**: the builder compiles TypeScript; the **final image** contains only production dependencies, **`dist/`**, **`scripts/`** (multi-agent launcher), and **`bot-page/`** (Jitsi bot UI). Never bake secrets into the image; use `--env-file .env.local` or inject env at runtime.
 
-   **Build and start** (using your local env file for secrets and config):
+   **Two run modes:**
+
+   | Mode | Service | Command to start |
+   |------|---------|------------------|
+   | **Single agent** | `podium-voices-agent` (+ optional `turn-coordinator`) | `docker compose --env-file .env.local up -d` |
+   | **Multi-agent** (coordinator + N agents in one container) | `podium-voices-multi-agent` | `docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent` |
+
+   **Docker quick reference (copy-paste for humans and A.I.):**
 
    ```bash
+   # Single-agent: build and start
    docker compose --env-file .env.local build
    docker compose --env-file .env.local up -d
+
+   # Multi-agent: build and start (PODIUM_TOKENS, AGENT_IDS, AGENT_DISPLAY_NAMES in .env.local)
+   docker compose --profile multi-agent --env-file .env.local build podium-voices-multi-agent
+   docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent
+
+   # Logs (single-agent: podium-voices-agent | multi-agent: podium-voices-multi-agent)
+   docker compose logs -f podium-voices-agent
+   docker compose --profile multi-agent logs -f podium-voices-multi-agent
+
+   # Stop
+   docker compose down
+   docker compose --profile multi-agent --env-file .env.local stop podium-voices-multi-agent
+
+   # Restart (e.g. after env change)
+   docker compose --env-file .env.local restart podium-voices-agent
+   docker compose --profile multi-agent --env-file .env.local restart podium-voices-multi-agent
    ```
 
-   Or export variables in your shell and run `docker compose up -d`. Inject `PODIUM_TOKEN` via your secret manager or environment; never bake secrets into the image. For more options (mounting a token file, required env vars), see [docs/DOCKER.md](docs/DOCKER.md).
+   For multi-agent, set in `.env.local`: **`PODIUM_TOKENS=token1,token2`**, **`AGENT_IDS=alex,jamie`**, **`AGENT_DISPLAY_NAMES=Alex,Jamie`** (and optionally `AGENT_PERSONAS=default,hype`). The container runs one coordinator (port 3001) and one agent process per token; bridge and health ports are auto-assigned. For more options (token file mount, required env, troubleshooting), see [docs/DOCKER.md](docs/DOCKER.md).
 
 ## Bot behavior
 

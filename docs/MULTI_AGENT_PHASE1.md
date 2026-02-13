@@ -2,6 +2,8 @@
 
 This document describes how to run **two or more AI agents** in the **same** Podium Outpost room (Phase 1 multi-agent), and how to configure `.env` for the Turn Coordinator and each agent process. For the difference between **standard (ASR→LLM→TTS)** and **PersonaPlex** backends and how to mix them, see the [Conversation backends](../README.md#conversation-backends) section in the main README.
 
+**Audience:** Human operators and A.I. agents. Use the [Docker (recommended)](#docker-recommended) path for one-command multi-agent startup; use the manual (coordinator + terminals) path for mix-and-match backends or per-agent env files.
+
 ## What Phase 1 Does
 
 - **Multiple agents, one room**: Each agent runs in its **own process** (one pipeline per agent). All agents join the **same** outpost (same `PODIUM_OUTPOST_UUID`). Each agent’s pipeline is either **standard** (VAD → ASR → memory → LLM → TTS) or **PersonaPlex** (VAD, optional ASR for context, then PersonaPlex for response audio).
@@ -116,7 +118,46 @@ The launcher starts one coordinator and one agent process per token/index (see [
 
 ---
 
+## Docker (recommended)
+
+The simplest way to run multi-agent is with Docker Compose. One container runs the Turn Coordinator plus all agent processes; env is provided via `--env-file .env.local`.
+
+**1. Set in `.env.local` (required for multi-agent):**
+
+- **`PODIUM_TOKENS`** = `token1,token2` (comma-separated; one token per agent)
+- **`AGENT_IDS`** = `alex,jamie`
+- **`AGENT_DISPLAY_NAMES`** = `Alex,Jamie`
+- Optional: **`AGENT_PERSONAS`** = `default,hype`; **`HEALTH_PORT_BASE`** = `8080`
+- Keep the same Podium API/WS URLs, `PODIUM_OUTPOST_UUID`, and ASR/LLM/TTS keys as for single-agent.
+
+**2. Build and start:**
+
+```bash
+docker compose --profile multi-agent --env-file .env.local build podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent
+```
+
+**3. Logs, stop, restart:**
+
+```bash
+docker compose --profile multi-agent logs -f podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local stop podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local restart podium-voices-multi-agent
+```
+
+The container starts the coordinator (port 3001) and one agent process per token; bridge and health ports are auto-assigned. For full Docker options, token file mount, and troubleshooting (e.g. missing `scripts/` or `bot-page/`), see **[docs/DOCKER.md](DOCKER.md)**.
+
+---
+
 ## Summary Checklist
+
+**Option A – Docker (recommended):**
+
+1. Set **`PODIUM_TOKENS`**, **`AGENT_IDS`**, **`AGENT_DISPLAY_NAMES`** (and optionally `AGENT_PERSONAS`) in `.env.local`.
+2. Run: `docker compose --profile multi-agent --env-file .env.local build podium-voices-multi-agent` then `up -d podium-voices-multi-agent`.
+3. See [DOCKER.md](DOCKER.md) for logs, stop, restart, and troubleshooting.
+
+**Option B – Manual (coordinator + terminals):**
 
 1. **Build**: `npm run build`
 2. **Start coordinator**: `COORDINATOR_PORT=3001 npm run start:coordinator` (leave running).
@@ -127,4 +168,4 @@ The launcher starts one coordinator and one agent process per token/index (see [
    - Same `PODIUM_OUTPOST_UUID` (and other Podium vars as needed)
    - For **same backend**: same `CONVERSATION_BACKEND` and ASR/LLM/TTS (or PersonaPlex) config. For **mixed backends**: start each agent in its own terminal with the desired `CONVERSATION_BACKEND` and backend-specific vars.
 
-Single-agent: omit `COORDINATOR_URL` and `AGENT_ID` and run `npm start` as before.
+Single-agent: omit `COORDINATOR_URL` and `AGENT_ID` and run `npm start` as before (or use `docker compose --env-file .env.local up -d` for single-agent Docker).

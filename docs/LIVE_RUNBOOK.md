@@ -1,6 +1,6 @@
 # Live runbook – Podium Voices
 
-Operator guide for running live sessions. See also [MVP_DEFINITION_OF_DONE.md](MVP_DEFINITION_OF_DONE.md) and [SMOKE_TEST_RUNBOOK.md](SMOKE_TEST_RUNBOOK.md).
+Operator guide for running live sessions. For humans and A.I. agents. See also [MVP_DEFINITION_OF_DONE.md](MVP_DEFINITION_OF_DONE.md) and [SMOKE_TEST_RUNBOOK.md](SMOKE_TEST_RUNBOOK.md).
 
 ---
 
@@ -9,7 +9,10 @@ Operator guide for running live sessions. See also [MVP_DEFINITION_OF_DONE.md](M
 1. **Token**
    - Confirm token is valid (see [TOKEN_ROTATION_SOP.md](TOKEN_ROTATION_SOP.md)). Rotate if needed; restart agent(s) after updating the secret.
 2. **Agent join**
-   - Start agent (or coordinator + agents). Confirm logs show `ROOM_JOINED` and no `AUTH_FAILURE`.
+   - **Docker single-agent:** `docker compose --env-file .env.local up -d` then `docker compose logs -f podium-voices-agent`.
+   - **Docker multi-agent:** `docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent` then `docker compose --profile multi-agent logs -f podium-voices-multi-agent`.
+   - **Local (no Docker):** Start coordinator then each agent (see [MULTI_AGENT_PHASE1.md](MULTI_AGENT_PHASE1.md)).
+   - Confirm logs show `ROOM_JOINED` and no `AUTH_FAILURE`; for Jitsi bot, `BOT_JS_LOADED` and `HTTP_UPGRADE` for `/bridge`.
 3. **Test line**
    - Join the outpost as a human, unmute, say a short line. Confirm `USER_TRANSCRIPT` and `AGENT_REPLY` in logs and that you hear TTS.
 4. **Feedback buttons**
@@ -22,7 +25,7 @@ Operator guide for running live sessions. See also [MVP_DEFINITION_OF_DONE.md](M
 ## During the session
 
 - **Latency:** Watch for `TURN_METRICS` (e.g. `end_of_user_speech_to_bot_audio_ms`). If latency spikes, consider restart or network check.
-- **Restart if stuck:** If the bot stops responding or WS drops, restart the process (or rely on watchdog exit and orchestrator restart). Reconnect or restart should bring the agent back within ~60s.
+- **Restart if stuck:** If the bot stops responding or WS drops, restart the process (or rely on watchdog exit and orchestrator restart). **Docker:** `docker compose --env-file .env.local restart podium-voices-agent` or `docker compose --profile multi-agent --env-file .env.local restart podium-voices-multi-agent`. Reconnect or restart should bring the agent back within ~60s.
 - **Fallback topic:** If the conversation drifts or audience is cold, use a known `TOPIC_SEED` or scripted greeting for the next round.
 
 ---

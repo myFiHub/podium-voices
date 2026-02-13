@@ -1,6 +1,34 @@
 # Docker – Build and run
 
-How to build and run Podium Voices with Docker and Docker Compose. The agent and Turn Coordinator use the same image; only the command differs.
+How to build and run Podium Voices with Docker and Docker Compose. The agent and Turn Coordinator use the same image; only the command differs. Written for both **human operators** and **A.I. agents** (clear headings, copy-paste commands, predictable behavior).
+
+---
+
+## Quick reference (humans and A.I.)
+
+Use these commands from the project root. Replace `.env.local` with your env file path if different.
+
+**Single-agent (one agent, optional separate coordinator):**
+
+```bash
+docker compose --env-file .env.local build
+docker compose --env-file .env.local up -d
+docker compose logs -f podium-voices-agent
+docker compose --env-file .env.local restart podium-voices-agent
+docker compose down
+```
+
+**Multi-agent (coordinator + N agents in one container):**
+
+```bash
+docker compose --profile multi-agent --env-file .env.local build podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local up -d podium-voices-multi-agent
+docker compose --profile multi-agent logs -f podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local restart podium-voices-multi-agent
+docker compose --profile multi-agent --env-file .env.local stop podium-voices-multi-agent
+```
+
+Required in `.env.local` for multi-agent: **`PODIUM_TOKENS=token1,token2`**, **`AGENT_IDS=alex,jamie`**, **`AGENT_DISPLAY_NAMES=Alex,Jamie`**. Optional: `AGENT_PERSONAS=default,hype`, `HEALTH_PORT_BASE=8080`. Same Podium API/WS URLs and ASR/LLM/TTS keys as single-agent.
 
 ---
 
@@ -9,7 +37,10 @@ How to build and run Podium Voices with Docker and Docker Compose. The agent and
 The Dockerfile uses a **multi-stage build**:
 
 - **Builder stage:** Installs all dependencies (including devDependencies), compiles TypeScript (`npm run build`), and produces `dist/`.
-- **Final stage:** Installs only production dependencies, copies `dist/` from the builder, and installs Playwright Chromium. The final image does not contain TypeScript or other dev tools.
+- **Final stage:** Installs only production dependencies; copies **`dist/`** from the builder; copies **`scripts/`** and **`bot-page/`** from the build context; installs Playwright Chromium. The final image does **not** contain TypeScript or dev tools. It **does** contain:
+  - **`dist/`** – compiled agent and coordinator
+  - **`scripts/`** – e.g. `run-multi-agent.js` (required for the multi-agent service)
+  - **`bot-page/`** – Jitsi bot HTML/JS (required when `USE_JITSI_BOT=true`)
 
 Build the image:
 
@@ -17,10 +48,17 @@ Build the image:
 docker compose build
 ```
 
-Or with no cache (e.g. after dependency or Dockerfile changes):
+Multi-agent service uses the same image; build it explicitly when using that profile:
+
+```bash
+docker compose --profile multi-agent build podium-voices-multi-agent
+```
+
+After Dockerfile or dependency changes (or if you see missing-module or missing-file errors), rebuild with no cache:
 
 ```bash
 docker compose build --no-cache
+docker compose --profile multi-agent build --no-cache podium-voices-multi-agent
 ```
 
 ---
@@ -123,18 +161,30 @@ AGENT_DISPLAY_NAMES=Alex,Jamie
 
 `podium-voices-multi-agent` runs one internal coordinator plus one agent process per token.
 
-View logs:
+**View logs:**
 
 ```bash
 docker compose logs -f podium-voices-agent
 docker compose logs -f turn-coordinator
-docker compose logs -f podium-voices-multi-agent
+# Multi-agent (use profile so Compose finds the service):
+docker compose --profile multi-agent logs -f podium-voices-multi-agent
 ```
 
-Stop:
+**Stop:**
 
 ```bash
+# Single-agent (and coordinator if running)
 docker compose down
+
+# Multi-agent only (container stops; network may remain)
+docker compose --profile multi-agent --env-file .env.local stop podium-voices-multi-agent
+```
+
+**Restart (e.g. after changing .env.local):**
+
+```bash
+docker compose --env-file .env.local restart podium-voices-agent
+docker compose --profile multi-agent --env-file .env.local restart podium-voices-multi-agent
 ```
 
 ---
@@ -148,3 +198,17 @@ docker compose down
 | `podium-voices-multi-agent` | `node scripts/run-multi-agent.js` | Profile `multi-agent`; starts internal coordinator + N agents from one env file. |
 
 For multi-agent, run multiple agent containers with different `AGENT_ID`, `AGENT_DISPLAY_NAME`, and (if needed) `PODIUM_TOKEN`, or scale and pass per-instance env (e.g. via Compose profiles or a separate stack).
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|--------|--------|-----|
+| `Cannot find module '/app/scripts/run-multi-agent.js'` | Image was built before `scripts/` was added to the final stage, or an old image is in use. | Rebuild: `docker compose --profile multi-agent build --no-cache podium-voices-multi-agent` then `up -d` again. |
+| `ENOENT: no such file or directory, open '/app/bot-page/bot.html'` or `BOT_PAGE_SERVE_ERROR` | Image was built before `bot-page/` was added to the final stage. | Rebuild: `docker compose --profile multi-agent build --no-cache podium-voices-multi-agent` (or `docker compose build --no-cache` for single-agent) then restart. |
+| `BOT_BRIDGE_CONNECT_TIMEOUT` / Jitsi never healthy | Bot page not served (see above) or Chromium/bridge port issue. | Ensure image includes `bot-page/` (rebuild if needed). Check logs for `BOT_JS_LOADED` and `HTTP_UPGRADE`; if missing, fix bot-page copy and rebuild. |
+| `WATCHDOG_CONFERENCE_UNHEALTHY` then process exits | Conference (Jitsi) stayed unhealthy (e.g. bridge never connected). | Fix bot-page/rebuild as above; then restart the container. |
+| `No .env.local found at /app/.env.local` in logs | Expected when using `--env-file .env.local`: the file is not inside the container; env is passed by Compose. | Safe to ignore. Config is loaded from process.env. |
+
+After any Dockerfile or `scripts/`/`bot-page/` change, always **rebuild** the image before expecting the change in the running container.
